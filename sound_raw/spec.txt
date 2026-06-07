@@ -1,0 +1,21 @@
+BGM
+main_title: ebunny-mystical-fantasy-loop-366827.mp3
+stage_select: TownTheme.mp3
+stage_1: battleThemeA.mp3
+stage_2: battleThemeA.mp3
+stage_3: Battle.mp3
+stage_4: Battle.mp3
+stage_5: bosstheme_WO_low.mp3
+---
+SFX
+ui_click: click1.ogg
+ui_select: metalClick.ogg
+chest_open: dropLeather.ogg
+weapon_melee: knifeSlice.ogg
+weapon_fire: yodguard-fire-magic-3-378640.mp3
+weapon_lightning: yodguard-lightning-magic-1-378645.mp3
+weapon_orbit: metalPot1.ogg
+necklace_thunder: dragon-studio-lightning-spell-386163.mp3
+necklace_shield: coghezzi-holy-healing-spell-533279.mp3
+necklace_poison: yodguard-potion-drink-3-540167.mp3
+necklace_meteor: freesound_community-supernatural-explosion-104295.mp3

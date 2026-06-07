@@ -54,3 +54,13 @@ npm run preview
 The current MVP uses temporary code-generated Phaser textures and WebAudio-generated sound cues. No external copyrighted game assets are included.
 
 External assets, if added later, must be documented in `public/assets/README.md` with source and license information.
+
+## Audio Credits
+
+- Main title BGM: Mystical Fantasy Loop by Ebunny, Pixabay Content License
+- Stage select BGM: Town Theme RPG by cynicmusic, CC0, OpenGameArt
+- Battle BGM: Battle Theme A by cynicmusic, CC0, OpenGameArt
+- Battle BGM: Battle Theme by Wolfgang_, CC0, OpenGameArt
+- Boss BGM: Boss Battle Music by SubspaceAudio, CC0, OpenGameArt
+- UI / RPG / Impact SFX: Kenney Audio Packs, CC0
+- Elemental SFX candidates: Pixabay Sound Effects, Pixabay Content License
