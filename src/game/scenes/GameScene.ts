@@ -1804,23 +1804,23 @@ export class GameScene extends Phaser.Scene {
 
     const container = this.add.container(0, 0).setDepth(100);
     const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.78).setOrigin(0);
-    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 390, 0x16111e)
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 410, 0x16111e)
       .setStrokeStyle(2, 0xf0c85a);
-    const title = this.add.text(GAME_WIDTH / 2, 134, 'Ending · 균열의 새벽', {
-      fontSize: '23px',
+    const title = this.add.text(GAME_WIDTH / 2, 150, 'Ending · 균열의 새벽', {
+      fontSize: '21px',
       color: '#f8ddb0',
     }).setOrigin(0.5);
-    const body = this.add.text(42, 178, ENDING_STORY_LINES.join('\n\n'), {
+    const body = this.add.text(42, 190, ENDING_STORY_LINES.join('\n\n'), {
       fontSize: '13px',
       color: '#ffffff',
       lineSpacing: 7,
       wordWrap: { width: 278 },
       align: 'center',
     });
-    const nextButton = this.add.rectangle(GAME_WIDTH / 2, 486, 178, 36, 0x26314a)
+    const nextButton = this.add.rectangle(GAME_WIDTH / 2, 506, 178, 36, 0x26314a)
       .setStrokeStyle(2, 0xf0c85a)
       .setInteractive({ useHandCursor: true });
-    const nextText = this.add.text(GAME_WIDTH / 2, 486, 'Back to Title', {
+    const nextText = this.add.text(GAME_WIDTH / 2, 506, 'Back to Title', {
       fontSize: '16px',
       color: '#ffffff',
     }).setOrigin(0.5);
