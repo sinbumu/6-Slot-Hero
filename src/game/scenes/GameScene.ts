@@ -223,6 +223,7 @@ export class GameScene extends Phaser.Scene {
   private isRunOver = false;
   private rewardPhase: RewardPhase = 'none';
   private modal?: Phaser.GameObjects.Container;
+  private equipmentInfoBlockedUntilMs = 0;
 
   constructor() {
     super('GameScene');
@@ -377,6 +378,9 @@ export class GameScene extends Phaser.Scene {
         color: '#f0d8aa',
       }).setOrigin(0.5);
       button.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+        if (this.isGameplayPaused() || performance.now() < this.equipmentInfoBlockedUntilMs) {
+          return;
+        }
         if (this.isTap(pointer)) {
           this.showEquipmentInfo(slot);
         }
@@ -1538,7 +1542,9 @@ export class GameScene extends Phaser.Scene {
     this.clearModal();
 
     const container = this.add.container(0, 0).setDepth(100);
-    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72).setOrigin(0);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72)
+      .setOrigin(0)
+      .setInteractive();
     const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 372, 0x16111e)
       .setStrokeStyle(2, 0xffb347);
     const title = this.add.text(GAME_WIDTH / 2, 146, 'Focused Loot!', {
@@ -1600,7 +1606,9 @@ export class GameScene extends Phaser.Scene {
     }
 
     const container = this.add.container(0, 0).setDepth(100);
-    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72).setOrigin(0);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72)
+      .setOrigin(0)
+      .setInteractive();
     const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 336, 572, 0x16111e)
       .setStrokeStyle(2, 0xf0c85a);
     const title = this.add.text(GAME_WIDTH / 2, 58, titleText, {
@@ -1726,6 +1734,7 @@ export class GameScene extends Phaser.Scene {
       this.completeStage();
       return;
     }
+    this.equipmentInfoBlockedUntilMs = performance.now() + 240;
     this.clearModal();
     this.rewardPhase = 'none';
     this.updateHud();
@@ -1757,7 +1766,9 @@ export class GameScene extends Phaser.Scene {
     const story = STAGE_INTRO_STORIES[this.stageId] ?? STAGE_INTRO_STORIES[1];
 
     const container = this.add.container(0, 0).setDepth(100);
-    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72).setOrigin(0);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72)
+      .setOrigin(0)
+      .setInteractive();
     const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 376, 0x16111e)
       .setStrokeStyle(2, 0xf0c85a);
     const title = this.add.text(GAME_WIDTH / 2, 154, story.title, {
@@ -1803,7 +1814,9 @@ export class GameScene extends Phaser.Scene {
     this.clearModal();
 
     const container = this.add.container(0, 0).setDepth(100);
-    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.78).setOrigin(0);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.78)
+      .setOrigin(0)
+      .setInteractive();
     const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 410, 0x16111e)
       .setStrokeStyle(2, 0xf0c85a);
     const title = this.add.text(GAME_WIDTH / 2, 150, 'Ending · 균열의 새벽', {
@@ -1848,14 +1861,16 @@ export class GameScene extends Phaser.Scene {
     this.clearModal();
 
     const container = this.add.container(0, 0).setDepth(100);
-    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.68).setOrigin(0);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.68)
+      .setOrigin(0)
+      .setInteractive();
     const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 394, 0x16111e)
       .setStrokeStyle(2, 0xf0c85a);
-    const title = this.add.text(GAME_WIDTH / 2, 134, 'How to Play', {
-      fontSize: '25px',
+    const title = this.add.text(GAME_WIDTH / 2, 150, 'How to Play', {
+      fontSize: '22px',
       color: '#f8ddb0',
     }).setOrigin(0.5);
-    const body = this.add.text(42, 176, [
+    const body = this.add.text(42, 186, [
       '1. 이동만 직접 조작합니다.',
       '   PC: WASD / 방향키',
       '   모바일: 하단 영역 드래그',
@@ -1902,7 +1917,9 @@ export class GameScene extends Phaser.Scene {
     this.clearModal();
 
     const container = this.add.container(0, 0).setDepth(100);
-    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.66).setOrigin(0);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.66)
+      .setOrigin(0)
+      .setInteractive();
     const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 306, 286, 0x16111e)
       .setStrokeStyle(2, 0xf0c85a);
     const title = this.add.text(GAME_WIDTH / 2, 202, 'Reward Equipped', {
@@ -1942,7 +1959,9 @@ export class GameScene extends Phaser.Scene {
     this.clearModal();
 
     const container = this.add.container(0, 0).setDepth(100);
-    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.62).setOrigin(0);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.62)
+      .setOrigin(0)
+      .setInteractive();
     const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 308, 292, 0x16111e)
       .setStrokeStyle(2, 0x9a8a78);
     const title = this.add.text(GAME_WIDTH / 2, 208, item ? this.getEquipmentDisplayName(item) : `${SLOT_LABELS[slot]} Empty`, {
