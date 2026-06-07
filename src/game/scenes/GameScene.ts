@@ -885,6 +885,8 @@ export class GameScene extends Phaser.Scene {
   private damageCombatTarget(target: CombatTarget, damage: number, hitColor = 0xffffff): void {
     const position = this.getTargetPosition(target);
     this.flashCombatTarget(target, hitColor);
+    this.punchCombatTarget(target);
+    this.cameras.main.shake(45, 0.0018);
     this.showDamageNumber(position.x, position.y, damage, hitColor);
     if (target.kind === 'boss') {
       this.damageBoss(damage);
@@ -1044,6 +1046,27 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  private punchCombatTarget(target: CombatTarget): void {
+    if (!this.player) {
+      return;
+    }
+
+    const sprite = target.kind === 'boss' ? target.boss.sprite : target.enemy.sprite;
+    const pushDistance = target.kind === 'boss' ? 3 : 8;
+    const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, sprite.x, sprite.y);
+    const targetX = Phaser.Math.Clamp(sprite.x + Math.cos(angle) * pushDistance, -20, GAME_WIDTH + 20);
+    const targetY = Phaser.Math.Clamp(sprite.y + Math.sin(angle) * pushDistance, PLAY_AREA_TOP - 20, PLAY_AREA_BOTTOM + 20);
+    this.tweens.add({
+      targets: sprite,
+      x: targetX,
+      y: targetY,
+      scaleX: 1.16,
+      scaleY: 1.16,
+      duration: 55,
+      yoyo: true,
+    });
+  }
+
   private showDamageNumber(x: number, y: number, damage: number, color: number): void {
     const text = this.add.text(x, y - 18, Math.max(1, Math.round(damage)).toString(), {
       fontSize: '11px',
@@ -1126,6 +1149,7 @@ export class GameScene extends Phaser.Scene {
     this.playerHp = Math.max(0, this.playerHp - rawDamage * (1 - damageReduction));
     this.playerHpBarVisibleUntilMs = this.elapsedMs + 1000;
     this.updateFloatingHealthBars();
+    this.cameras.main.shake(90, 0.004);
     playSound('hit');
     this.flashPlayer();
   }
@@ -1194,7 +1218,15 @@ export class GameScene extends Phaser.Scene {
       this.openFocusSlotModal();
       return;
     }
-    this.openRewardModal(generateRewardOptions({ stageId: this.stageId, context: 'normalChest' }), 'normalReward');
+    const isFirstStageFirstChest = this.stageId === 1 && this.chestCountInRun === 1;
+    this.openRewardModal(
+      generateRewardOptions({
+        stageId: this.stageId,
+        context: 'normalChest',
+        focusSlot: isFirstStageFirstChest ? 'weapon' : undefined,
+      }),
+      'normalReward',
+    );
   }
 
   private openFocusSlotModal(): void {
@@ -1288,6 +1320,9 @@ export class GameScene extends Phaser.Scene {
       const card = this.add.rectangle(GAME_WIDTH / 2, y, 306, 114, isSameItem ? 0x2e2a19 : 0x241b2d)
         .setStrokeStyle(isSameItem ? 3 : 2, isSameItem ? 0x9dff7a : this.getRarityColor(item.rarity))
         .setInteractive({ useHandCursor: true });
+      const synergyBadge = this.hasCoreSynergy(item)
+        ? this.createSynergyBadge(262, y - 43)
+        : [];
       const name = this.add.text(30, y - 50, this.truncateText(`${this.getEquipmentDisplayName(item)} [${getRarityLabel(item.rarity)}]`, 31), {
         fontSize: '13px',
         color: '#ffffff',
@@ -1310,7 +1345,7 @@ export class GameScene extends Phaser.Scene {
         color: '#9a8a78',
       });
       card.on('pointerdown', () => this.equipReward(item));
-      container.add([card, name, replaceText, desc, optionsText, hint]);
+      container.add([card, ...synergyBadge, name, replaceText, desc, optionsText, hint]);
     });
 
     const skip = this.add.rectangle(GAME_WIDTH / 2, 538, 278, 34, 0x302631)
@@ -1518,30 +1553,30 @@ export class GameScene extends Phaser.Scene {
 
     const container = this.add.container(0, 0).setDepth(100);
     const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.66).setOrigin(0);
-    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 306, 254, 0x16111e)
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 306, 286, 0x16111e)
       .setStrokeStyle(2, 0xf0c85a);
-    const title = this.add.text(GAME_WIDTH / 2, 224, 'Reward Equipped', {
+    const title = this.add.text(GAME_WIDTH / 2, 202, 'Reward Equipped', {
       fontSize: '22px',
       color: '#f8ddb0',
     }).setOrigin(0.5);
-    const body = this.add.text(48, 264, [
+    const body = this.add.text(48, 244, [
       `${this.getEquipmentDisplayName(item)} 장비가 적용되었습니다.`,
       '',
       isUpgrade
-        ? '같은 장비를 골라 기존 장비의 +강화가 올라갔습니다.'
+        ? '같은 장비라 기존 장비가 +강화되었습니다.'
         : '같은 슬롯의 기존 장비가 있었다면 새 장비로 교체됩니다.',
       '',
-      '장비 효과는 즉시 공격 방식, 피해, 생존력, 시너지에 반영됩니다.',
+      '효과는 즉시 공격, 생존력, 시너지에 반영됩니다.',
     ].join('\n'), {
-      fontSize: '13px',
+      fontSize: '12px',
       color: '#ffffff',
-      lineSpacing: 6,
+      lineSpacing: 5,
       wordWrap: { width: 264 },
     });
-    const okButton = this.add.rectangle(GAME_WIDTH / 2, 390, 132, 34, 0x26314a)
+    const okButton = this.add.rectangle(GAME_WIDTH / 2, 430, 132, 34, 0x26314a)
       .setStrokeStyle(2, 0xf0c85a)
       .setInteractive({ useHandCursor: true });
-    const okText = this.add.text(GAME_WIDTH / 2, 390, 'OK', {
+    const okText = this.add.text(GAME_WIDTH / 2, 430, 'OK', {
       fontSize: '15px',
       color: '#ffffff',
     }).setOrigin(0.5);
@@ -1597,6 +1632,13 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.player.setTexture('player_hit');
+    this.tweens.add({
+      targets: this.player,
+      scaleX: 1.18,
+      scaleY: 1.18,
+      duration: 55,
+      yoyo: true,
+    });
     this.time.delayedCall(90, () => {
       this.player?.setTexture('player_circle');
     });
@@ -1791,6 +1833,34 @@ export class GameScene extends Phaser.Scene {
       }).setOrigin(0.5);
       container.add([pill, label]);
       cursorX += width + 4;
+    });
+  }
+
+  private createSynergyBadge(x: number, y: number): Phaser.GameObjects.GameObject[] {
+    const bg = this.add.rectangle(x, y, 76, 16, 0x3b2d13, 0.92)
+      .setOrigin(0.5)
+      .setStrokeStyle(1, 0xffd36a, 0.95);
+    const label = this.add.text(x, y, '✨ SYNERGY', {
+      fontSize: '8px',
+      color: '#ffe7a3',
+    }).setOrigin(0.5);
+    return [bg, label];
+  }
+
+  private hasCoreSynergy(item: RolledEquipment): boolean {
+    const save = getSaveData();
+    const coreItems = [save.equipped.weapon, save.equipped.necklace].filter((candidate): candidate is RolledEquipment => Boolean(candidate));
+    if (coreItems.length === 0) {
+      return false;
+    }
+
+    const ignoredTags = new Set<Tag>(['mainAttack', 'supportSkill', 'defense']);
+    const itemTags = new Set(item.tags.filter((tag) => !ignoredTags.has(tag)));
+    return coreItems.some((coreItem) => {
+      if (coreItem.instanceId === item.instanceId) {
+        return false;
+      }
+      return coreItem.tags.some((tag) => itemTags.has(tag));
     });
   }
 
