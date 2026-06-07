@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS } from '../constants';
 import { getSaveData } from '../storage';
-import { playSound } from '../systems/SoundSystem';
+import { playBgm, playSound } from '../systems/SoundSystem';
 import type { EquipmentSlot, RunResult } from '../types';
 
 const EQUIPMENT_SLOTS = Object.keys(SLOT_LABELS) as EquipmentSlot[];
@@ -31,7 +31,8 @@ export class ResultScene extends Phaser.Scene {
 
   create(): void {
     const save = getSaveData();
-    playSound(this.result.cleared ? 'clear' : 'fail');
+    playBgm(this, 'stage_select');
+    playSound(this.result.cleared ? 'clear' : 'fail', this);
     this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x0f0d15).setOrigin(0);
     this.add.text(GAME_WIDTH / 2, 82, this.result.cleared ? 'Stage Clear' : 'Run Failed', {
       fontSize: '32px',
@@ -59,9 +60,11 @@ export class ResultScene extends Phaser.Scene {
     });
 
     this.createButton(GAME_WIDTH / 2, 526, 'Retry Stage', () => {
+      playSound('ui_select', this);
       this.scene.start('GameScene', { stageId: this.result.stageId });
     });
     this.createButton(GAME_WIDTH / 2, 574, 'Stage Select', () => {
+      playSound('ui_click', this);
       this.scene.start('StageSelectScene');
     });
   }

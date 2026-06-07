@@ -4,7 +4,7 @@ import { BOSS_DEFS, type BossDef, type BossPatternDef } from '../data/bosses';
 import { ENEMY_DEFS, type EnemyDef } from '../data/enemies';
 import { generateRewardOptions, getRarityLabel } from '../data/equipment';
 import { getSaveData, updateSaveData } from '../storage';
-import { playSound } from '../systems/SoundSystem';
+import { playBgm, playSound, type BgmCue } from '../systems/SoundSystem';
 import type { EquipmentSlot, RolledEquipment, RunResult, SkillKind, Tag } from '../types';
 
 interface GameSceneData {
@@ -259,6 +259,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
+    playBgm(this, `stage_${this.stageId}` as BgmCue);
     updateSaveData((current) => ({
       ...current,
       stats: {
@@ -576,6 +577,7 @@ export class GameScene extends Phaser.Scene {
       this.drawMeleeSlash(this.player!.x, this.player!.y, x, y, attackStats.range);
       this.damageCombatTarget(target, this.rollMainDamage(attackStats), 0xffe0c2);
     }
+    playSound('weapon_melee', this);
     return true;
   }
 
@@ -604,6 +606,7 @@ export class GameScene extends Phaser.Scene {
       this.damageCombatTarget(target, this.rollMainDamage(attackStats) * (index === 0 ? 1 : 0.72), 0x82d8ff);
       from = to;
     });
+    playSound('weapon_lightning', this);
     return true;
   }
 
@@ -618,6 +621,7 @@ export class GameScene extends Phaser.Scene {
       .setTint(0xff7a3d)
       .setScale(1.4)
       .setDepth(7);
+    playSound('weapon_fire', this);
     this.drawProjectileTrail(projectile, 0xff8a3d);
     const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, destination.x, destination.y);
     const duration = Phaser.Math.Clamp((distance / attackStats.projectileSpeed) * 1000, 120, 650);
@@ -655,6 +659,7 @@ export class GameScene extends Phaser.Scene {
       .setTint(0x60d96f)
       .setScale(1.45)
       .setDepth(7);
+    playSound('weapon_orbit', this);
     this.drawPoisonTrail(chakram);
     const hitTimer = this.time.addEvent({
       delay: 28,
@@ -745,6 +750,7 @@ export class GameScene extends Phaser.Scene {
       if (this.isRunOver || this.isGameplayPaused()) {
         return;
       }
+      playSound('necklace_thunder', this);
       this.drawLightningSpark(x, y);
       for (const hitTarget of this.findCombatTargetsInRadius(x, y, stats.radius)) {
         this.damageCombatTarget(hitTarget, this.rollSupportDamage(stats), 0xffef6a);
@@ -764,6 +770,7 @@ export class GameScene extends Phaser.Scene {
     this.shieldRing = this.add.circle(this.player.x, this.player.y, 22, 0x8ed6ff, 0.14)
       .setStrokeStyle(2, 0x8ed6ff, 0.9)
       .setDepth(11);
+    playSound('necklace_shield', this);
     this.tweens.add({
       targets: this.shieldRing,
       scaleX: 1.35,
@@ -808,6 +815,7 @@ export class GameScene extends Phaser.Scene {
     const { x, y } = this.getTargetPosition(target);
     this.addEnemyHazard(x, y, stats.radius, Math.max(1, stats.dotDamagePerSec), stats.dotDurationMs, 0x74ff83);
     this.applySlow(target, stats.slowPercent, Math.min(1200, stats.dotDurationMs));
+    playSound('necklace_poison', this);
     return true;
   }
 
@@ -846,7 +854,7 @@ export class GameScene extends Phaser.Scene {
 
   private spawnBoss(): void {
     const def = BOSS_DEFS.find((candidate) => candidate.stageId === this.stageId) ?? BOSS_DEFS[0];
-    playSound('boss');
+    playSound('boss', this);
     const sprite = this.add.image(GAME_WIDTH / 2, PLAY_AREA_TOP + 64, 'boss_large')
       .setTint(def.colorHex)
       .setDepth(4);
@@ -1446,7 +1454,7 @@ export class GameScene extends Phaser.Scene {
     this.playerHpBarVisibleUntilMs = this.elapsedMs + 1000;
     this.updateFloatingHealthBars();
     this.cameras.main.shake(90, 0.004);
-    playSound('hit');
+    playSound('hit', this);
     this.flashPlayer();
   }
 
@@ -1470,7 +1478,7 @@ export class GameScene extends Phaser.Scene {
       hazard.shape.destroy();
     }
     this.hazards = [];
-    playSound('clear');
+    playSound('clear', this);
     this.openRewardModal(generateRewardOptions({ stageId: this.stageId, context: 'bossReward' }), 'bossReward', 'Boss Reward');
   }
 
@@ -1509,7 +1517,7 @@ export class GameScene extends Phaser.Scene {
     chest.sprite.destroy();
     this.chests = this.chests.filter((candidate) => candidate.id !== chest.id);
     this.chestCountInRun += 1;
-    playSound('chest');
+    playSound('chest', this);
     if (this.chestCountInRun % 3 === 0) {
       this.openFocusSlotModal();
       return;
@@ -1677,7 +1685,7 @@ export class GameScene extends Phaser.Scene {
     this.equippedCount = Object.keys(getSaveData().equipped).length;
     this.playerMaxHp = this.calculatePlayerMaxHp();
     this.playerHp = Math.min(this.playerMaxHp, this.playerHp + this.getEquippedOptionTotal('maxHpBonus'));
-    playSound('equip');
+    playSound('equip', this);
     this.refreshEquipmentPanel();
     if (shouldClearStage) {
       this.completeStage();
@@ -1708,7 +1716,7 @@ export class GameScene extends Phaser.Scene {
     this.playerMaxHp = this.calculatePlayerMaxHp();
     this.playerHp = Math.min(this.playerMaxHp, this.playerHp + SKIP_BONUS_HEAL);
     this.bossGauge = Math.min(100, this.bossGauge + SKIP_BONUS_BOSS_GAUGE);
-    playSound('equip');
+    playSound('equip', this);
     this.refreshEquipmentPanel();
     this.closeRewardModal();
   }
@@ -1827,6 +1835,7 @@ export class GameScene extends Phaser.Scene {
       }));
       this.clearModal();
       this.rewardPhase = 'none';
+      playSound('ui_click', this);
       this.scene.start('TitleScene');
     });
 

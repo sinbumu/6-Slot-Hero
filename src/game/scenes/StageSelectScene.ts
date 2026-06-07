@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS, STAGE_COUNT } from '../constants';
 import { getSaveData, resetSaveData, updateSaveData } from '../storage';
+import { applySceneVolume, playBgm, playSound } from '../systems/SoundSystem';
 import type { EquipmentSlot } from '../types';
 
 const EQUIPMENT_SLOTS = Object.keys(SLOT_LABELS) as EquipmentSlot[];
@@ -11,6 +12,7 @@ export class StageSelectScene extends Phaser.Scene {
   }
 
   create(): void {
+    playBgm(this, 'stage_select');
     this.render();
   }
 
@@ -40,6 +42,7 @@ export class StageSelectScene extends Phaser.Scene {
 
       if (isOpen) {
         button.on('pointerdown', () => {
+          playSound('ui_select', this);
           this.scene.start('GameScene', { stageId });
         });
       }
@@ -87,6 +90,7 @@ export class StageSelectScene extends Phaser.Scene {
           volume: current.settings.volume > 0 ? 0 : 0.7,
         },
       }));
+      applySceneVolume(this);
       this.render();
     });
 
@@ -99,8 +103,10 @@ export class StageSelectScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     resetButton.on('pointerdown', () => {
+      playSound('ui_click', this);
       if (window.confirm('Reset all save data?')) {
         resetSaveData();
+        applySceneVolume(this);
         this.render();
       }
     });

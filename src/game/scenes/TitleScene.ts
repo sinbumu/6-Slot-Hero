@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH } from '../constants';
+import { playBgm, playSound } from '../systems/SoundSystem';
 
 export class TitleScene extends Phaser.Scene {
   constructor() {
@@ -7,6 +8,7 @@ export class TitleScene extends Phaser.Scene {
   }
 
   create(): void {
+    playBgm(this, 'main_title');
     this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x09080d).setOrigin(0);
     this.add.text(GAME_WIDTH / 2, 164, '6-Slot Hero', {
       fontFamily: 'Georgia, serif',
@@ -35,6 +37,7 @@ export class TitleScene extends Phaser.Scene {
     });
 
     this.input.once('pointerdown', () => {
+      playSound('ui_click', this);
       this.scene.start('StageSelectScene');
     });
   }
