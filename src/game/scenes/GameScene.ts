@@ -5,7 +5,7 @@ import { ENEMY_DEFS, type EnemyDef } from '../data/enemies';
 import { generateRewardOptions, getRarityLabel } from '../data/equipment';
 import { getSaveData, updateSaveData } from '../storage';
 import { playSound } from '../systems/SoundSystem';
-import type { EquipmentSlot, RolledEquipment, RunResult, SkillKind } from '../types';
+import type { EquipmentSlot, RolledEquipment, RunResult, SkillKind, Tag } from '../types';
 
 interface GameSceneData {
   stageId?: number;
@@ -85,11 +85,34 @@ const PLAYER_MOVE_SPEED = 130;
 const BARE_FIST_COOLDOWN_MS = 420;
 const BARE_FIST_RANGE = 68;
 const MAX_ENEMIES = 80;
-const CHEST_DROP_CHANCE = 0.18;
+const CHEST_DROP_CHANCE = 0.072;
+const CHEST_PITY_KILLS = 10;
+const SKIP_BONUS_MAX_HP = 2;
+const SKIP_BONUS_HEAL = 12;
+const SKIP_BONUS_BOSS_GAUGE = 3;
+const MAX_EQUIPMENT_UPGRADE = 10;
+const UPGRADE_POWER_STEP = 0.04;
 const BOSS_GAUGE_TIME_PER_SEC = 1.25;
 const BOSS_GAUGE_PER_KILL = 2.2;
 const TAP_MAX_DISTANCE = 8;
 const TAP_MAX_MS = 200;
+
+const TAG_ICON_CONFIG: Record<Tag, { label: string; color: number; priority: number }> = {
+  mainAttack: { label: '⚔ MAIN', color: 0xff7070, priority: 10 },
+  supportSkill: { label: '✨ SUP', color: 0x9b8cff, priority: 12 },
+  melee: { label: '🗡 MEL', color: 0xffb347, priority: 20 },
+  projectile: { label: '🏹 PRJ', color: 0x7ac7ff, priority: 21 },
+  orbit: { label: '🌀 ORB', color: 0xd7a3ff, priority: 23 },
+  area: { label: '💥 AOE', color: 0xff8a3d, priority: 22 },
+  physical: { label: '🪨 PHY', color: 0xd8c6a3, priority: 30 },
+  fire: { label: '🔥 FIR', color: 0xff653d, priority: 31 },
+  ice: { label: '❄ ICE', color: 0x7ae7ff, priority: 32 },
+  lightning: { label: '⚡ LIT', color: 0xffef6a, priority: 33 },
+  poison: { label: '☠ PSN', color: 0x74ff83, priority: 34 },
+  defense: { label: '🛡 DEF', color: 0x9aa4b8, priority: 40 },
+  shield: { label: '🔷 SHD', color: 0x8ed6ff, priority: 41 },
+  lifesteal: { label: '🩸 LIF', color: 0xff7aac, priority: 42 },
+};
 
 export class GameScene extends Phaser.Scene {
   private stageId = 1;
@@ -102,6 +125,11 @@ export class GameScene extends Phaser.Scene {
   private timeText?: Phaser.GameObjects.Text;
   private equipmentText?: Phaser.GameObjects.Text;
   private chestText?: Phaser.GameObjects.Text;
+  private playerHpBarBg?: Phaser.GameObjects.Rectangle;
+  private playerHpBarFill?: Phaser.GameObjects.Rectangle;
+  private playerHpBarVisibleUntilMs = 0;
+  private bossHpBarBg?: Phaser.GameObjects.Rectangle;
+  private bossHpBarFill?: Phaser.GameObjects.Rectangle;
   private playerHp = BASE_PLAYER_MAX_HP;
   private playerMaxHp = BASE_PLAYER_MAX_HP;
   private enemies: EnemyState[] = [];
@@ -114,8 +142,11 @@ export class GameScene extends Phaser.Scene {
   private elapsedMs = 0;
   private bossGauge = 0;
   private kills = 0;
+  private killsSinceLastChest = 0;
   private equippedCount = 0;
   private chestCountInRun = 0;
+  private skipBonusCount = 0;
+  private runBonusMaxHp = 0;
   private pointerMoveVector = new Phaser.Math.Vector2(0, 0);
   private isPointerMoving = false;
   private isRunOver = false;
@@ -138,8 +169,11 @@ export class GameScene extends Phaser.Scene {
     this.elapsedMs = 0;
     this.bossGauge = 0;
     this.kills = 0;
+    this.killsSinceLastChest = 0;
     this.equippedCount = Object.keys(getSaveData().equipped).length;
     this.chestCountInRun = 0;
+    this.skipBonusCount = 0;
+    this.runBonusMaxHp = 0;
     this.playerMaxHp = this.calculatePlayerMaxHp();
     this.playerHp = this.playerMaxHp;
     this.pointerMoveVector.set(0, 0);
@@ -163,12 +197,15 @@ export class GameScene extends Phaser.Scene {
     this.drawGrid();
     this.createHud();
     this.player = this.add.image(GAME_WIDTH / 2, 310, 'player_circle').setDepth(5);
+    this.createPlayerHpBar();
     this.setupInput();
     this.createEquipmentPanel();
     this.createButton(GAME_WIDTH / 2, 614, 'End Test Run', () => {
       this.finishRun(false);
     });
-    if (this.stageId === 1 && !getSaveData().tutorial.stage1Seen) {
+    if (this.stageId === 1 && !getSaveData().tutorial.introSeen) {
+      this.showIntroStoryModal();
+    } else if (this.stageId === 1 && !getSaveData().tutorial.stage1Seen) {
       this.showTutorialModal();
     }
   }
@@ -189,6 +226,7 @@ export class GameScene extends Phaser.Scene {
     this.updateHazards(delta);
     this.updateChestPickup();
     this.updateHud();
+    this.updateFloatingHealthBars();
 
     if (this.playerHp <= 0) {
       this.finishRun(false);
@@ -278,6 +316,30 @@ export class GameScene extends Phaser.Scene {
       color: '#ffffff',
     }).setOrigin(0.5);
     button.on('pointerdown', onClick);
+  }
+
+  private createPlayerHpBar(): void {
+    this.playerHpBarBg = this.add.rectangle(0, 0, 44, 6, 0x1a1010, 0.92)
+      .setOrigin(0, 0.5)
+      .setStrokeStyle(1, 0x000000, 0.7)
+      .setDepth(12)
+      .setVisible(false);
+    this.playerHpBarFill = this.add.rectangle(0, 0, 42, 4, 0x69e37b, 1)
+      .setOrigin(0, 0.5)
+      .setDepth(13)
+      .setVisible(false);
+  }
+
+  private createBossHpBar(): void {
+    this.bossHpBarBg?.destroy();
+    this.bossHpBarFill?.destroy();
+    this.bossHpBarBg = this.add.rectangle(0, 0, 76, 7, 0x1a1010, 0.95)
+      .setOrigin(0, 0.5)
+      .setStrokeStyle(1, 0x000000, 0.8)
+      .setDepth(12);
+    this.bossHpBarFill = this.add.rectangle(0, 0, 74, 5, 0xff6262, 1)
+      .setOrigin(0, 0.5)
+      .setDepth(13);
   }
 
   private setupInput(): void {
@@ -431,8 +493,8 @@ export class GameScene extends Phaser.Scene {
 
     for (const target of targets) {
       const { x, y } = this.getTargetPosition(target);
-      this.damageCombatTarget(target, this.rollMainDamage(attackStats));
-      this.showHitEffect(x, y);
+      this.drawMeleeSlash(this.player!.x, this.player!.y, x, y, attackStats.range);
+      this.damageCombatTarget(target, this.rollMainDamage(attackStats), 0xffe0c2);
     }
     return true;
   }
@@ -458,7 +520,8 @@ export class GameScene extends Phaser.Scene {
     chainedTargets.forEach((target, index) => {
       const to = this.getTargetPosition(target);
       this.drawLightningLine(from.x, from.y, to.x, to.y);
-      this.damageCombatTarget(target, this.rollMainDamage(attackStats) * (index === 0 ? 1 : 0.72));
+      this.drawLightningSpark(to.x, to.y);
+      this.damageCombatTarget(target, this.rollMainDamage(attackStats) * (index === 0 ? 1 : 0.72), 0x82d8ff);
       from = to;
     });
     return true;
@@ -473,7 +536,9 @@ export class GameScene extends Phaser.Scene {
     const destination = this.getTargetPosition(target);
     const projectile = this.add.image(this.player.x, this.player.y, 'projectile_orb')
       .setTint(0xff7a3d)
+      .setScale(1.4)
       .setDepth(7);
+    this.drawProjectileTrail(projectile, 0xff8a3d);
     const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, destination.x, destination.y);
     const duration = Phaser.Math.Clamp((distance / attackStats.projectileSpeed) * 1000, 120, 650);
     this.tweens.add({
@@ -498,7 +563,9 @@ export class GameScene extends Phaser.Scene {
 
     const chakram = this.add.image(this.player!.x, this.player!.y, 'projectile_orb')
       .setTint(0x60d96f)
+      .setScale(1.45)
       .setDepth(7);
+    this.drawPoisonTrail(chakram);
     const finalTarget = this.getTargetPosition(targets[targets.length - 1]);
     this.tweens.add({
       targets: chakram,
@@ -512,7 +579,7 @@ export class GameScene extends Phaser.Scene {
 
     for (const target of targets) {
       const { x, y } = this.getTargetPosition(target);
-      this.damageCombatTarget(target, this.rollMainDamage(attackStats) * 0.82);
+      this.damageCombatTarget(target, this.rollMainDamage(attackStats) * 0.82, 0x74ff83);
       this.addPoisonTickText(x, y);
     }
     return true;
@@ -548,6 +615,7 @@ export class GameScene extends Phaser.Scene {
       chargeVelocity: new Phaser.Math.Vector2(0, 0),
       chargeMs: 0,
     };
+    this.createBossHpBar();
     const announce = this.add.text(GAME_WIDTH / 2, 120, `${def.nameKo} 등장!`, {
       fontSize: '20px',
       color: '#ffdb9a',
@@ -814,7 +882,10 @@ export class GameScene extends Phaser.Scene {
     return { x: sprite.x, y: sprite.y };
   }
 
-  private damageCombatTarget(target: CombatTarget, damage: number): void {
+  private damageCombatTarget(target: CombatTarget, damage: number, hitColor = 0xffffff): void {
+    const position = this.getTargetPosition(target);
+    this.flashCombatTarget(target, hitColor);
+    this.showDamageNumber(position.x, position.y, damage, hitColor);
     if (target.kind === 'boss') {
       this.damageBoss(damage);
       return;
@@ -838,12 +909,47 @@ export class GameScene extends Phaser.Scene {
     return damage;
   }
 
+  private drawMeleeSlash(fromX: number, fromY: number, toX: number, toY: number, range: number): void {
+    const angle = Phaser.Math.Angle.Between(fromX, fromY, toX, toY);
+    const arc = this.add.ellipse(
+      fromX + Math.cos(angle) * range * 0.45,
+      fromY + Math.sin(angle) * range * 0.45,
+      range * 0.95,
+      22,
+      0xfff0d0,
+      0.18,
+    )
+      .setRotation(angle)
+      .setStrokeStyle(3, 0xffd08a, 0.95)
+      .setDepth(8);
+    this.tweens.add({
+      targets: arc,
+      alpha: 0,
+      scaleX: 1.25,
+      scaleY: 1.8,
+      duration: 150,
+      onComplete: () => arc.destroy(),
+    });
+  }
+
   private explodeAt(x: number, y: number, radius: number, damage: number): void {
     const explosion = this.add.circle(x, y, radius, 0xff7a3d, 0.28)
       .setStrokeStyle(2, 0xffd08a)
       .setDepth(8);
     for (const target of this.findCombatTargetsInRadius(x, y, radius)) {
-      this.damageCombatTarget(target, damage);
+      this.damageCombatTarget(target, damage, 0xff8a3d);
+    }
+    for (let index = 0; index < 8; index += 1) {
+      const angle = (Math.PI * 2 * index) / 8;
+      const ember = this.add.circle(x, y, 3, 0xffd08a, 0.9).setDepth(9);
+      this.tweens.add({
+        targets: ember,
+        x: x + Math.cos(angle) * radius * 0.75,
+        y: y + Math.sin(angle) * radius * 0.75,
+        alpha: 0,
+        duration: 260,
+        onComplete: () => ember.destroy(),
+      });
     }
     this.tweens.add({
       targets: explosion,
@@ -865,6 +971,92 @@ export class GameScene extends Phaser.Scene {
       alpha: 0,
       duration: 130,
       onComplete: () => line.destroy(),
+    });
+  }
+
+  private drawLightningSpark(x: number, y: number): void {
+    const ring = this.add.circle(x, y, 12, 0x82d8ff, 0.22)
+      .setStrokeStyle(2, 0xd7f3ff, 0.9)
+      .setDepth(9);
+    this.tweens.add({
+      targets: ring,
+      alpha: 0,
+      scaleX: 1.7,
+      scaleY: 1.7,
+      duration: 140,
+      onComplete: () => ring.destroy(),
+    });
+  }
+
+  private drawProjectileTrail(projectile: Phaser.GameObjects.Image, color: number): void {
+    const timer = this.time.addEvent({
+      delay: 35,
+      repeat: 12,
+      callback: () => {
+        if (!projectile.active) {
+          timer.remove();
+          return;
+        }
+        const puff = this.add.circle(projectile.x, projectile.y, 4, color, 0.35).setDepth(6);
+        this.tweens.add({
+          targets: puff,
+          alpha: 0,
+          scaleX: 1.6,
+          scaleY: 1.6,
+          duration: 180,
+          onComplete: () => puff.destroy(),
+        });
+      },
+    });
+  }
+
+  private drawPoisonTrail(projectile: Phaser.GameObjects.Image): void {
+    const timer = this.time.addEvent({
+      delay: 30,
+      repeat: 10,
+      callback: () => {
+        if (!projectile.active) {
+          timer.remove();
+          return;
+        }
+        const drop = this.add.circle(projectile.x, projectile.y, 3, 0x74ff83, 0.45).setDepth(6);
+        this.tweens.add({
+          targets: drop,
+          y: drop.y + 5,
+          alpha: 0,
+          duration: 220,
+          onComplete: () => drop.destroy(),
+        });
+      },
+    });
+  }
+
+  private flashCombatTarget(target: CombatTarget, color: number): void {
+    const sprite = target.kind === 'boss' ? target.boss.sprite : target.enemy.sprite;
+    sprite.setTint(color);
+    this.time.delayedCall(70, () => {
+      if (sprite.active) {
+        sprite.clearTint();
+        if (target.kind === 'boss') {
+          sprite.setTint(target.boss.def.colorHex);
+        }
+      }
+    });
+  }
+
+  private showDamageNumber(x: number, y: number, damage: number, color: number): void {
+    const text = this.add.text(x, y - 18, Math.max(1, Math.round(damage)).toString(), {
+      fontSize: '11px',
+      color: `#${color.toString(16).padStart(6, '0')}`,
+      stroke: '#000000',
+      strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(10);
+    this.tweens.add({
+      targets: text,
+      y: text.y - 14,
+      alpha: 0,
+      duration: 420,
+      onComplete: () => text.destroy(),
     });
   }
 
@@ -897,6 +1089,7 @@ export class GameScene extends Phaser.Scene {
     enemy.sprite.destroy();
     this.enemies = this.enemies.filter((candidate) => candidate.id !== enemy.id);
     this.kills += 1;
+    this.killsSinceLastChest += 1;
     this.bossGauge = Math.min(100, this.bossGauge + BOSS_GAUGE_PER_KILL);
     updateSaveData((save) => ({
       ...save,
@@ -906,8 +1099,9 @@ export class GameScene extends Phaser.Scene {
       },
     }));
 
-    if (this.kills % 5 === 0 || Math.random() < CHEST_DROP_CHANCE) {
+    if (this.killsSinceLastChest >= CHEST_PITY_KILLS || Math.random() < CHEST_DROP_CHANCE) {
       this.dropChest(x, y);
+      this.killsSinceLastChest = 0;
     }
   }
 
@@ -930,6 +1124,8 @@ export class GameScene extends Phaser.Scene {
   private damagePlayer(rawDamage: number): void {
     const damageReduction = Phaser.Math.Clamp(this.getEquippedOptionTotal('damageReductionPercent'), 0, 0.6);
     this.playerHp = Math.max(0, this.playerHp - rawDamage * (1 - damageReduction));
+    this.playerHpBarVisibleUntilMs = this.elapsedMs + 1000;
+    this.updateFloatingHealthBars();
     playSound('hit');
     this.flashPlayer();
   }
@@ -941,6 +1137,10 @@ export class GameScene extends Phaser.Scene {
 
     this.boss.sprite.destroy();
     this.boss = undefined;
+    this.bossHpBarBg?.destroy();
+    this.bossHpBarFill?.destroy();
+    this.bossHpBarBg = undefined;
+    this.bossHpBarFill = undefined;
     this.bossGauge = 100;
     for (const projectile of this.bossProjectiles) {
       projectile.sprite.destroy();
@@ -1037,14 +1237,14 @@ export class GameScene extends Phaser.Scene {
       container.add([button, label]);
     });
 
-    const skip = this.add.rectangle(GAME_WIDTH / 2, 432, 140, 32, 0x302631)
+    const skip = this.add.rectangle(GAME_WIDTH / 2, 432, 222, 32, 0x302631)
       .setStrokeStyle(1, 0x9a8a78)
       .setInteractive({ useHandCursor: true });
-    const skipText = this.add.text(GAME_WIDTH / 2, 432, '선택 안 함', {
-      fontSize: '14px',
+    const skipText = this.add.text(GAME_WIDTH / 2, 432, this.getSkipRewardLabel('focusReward'), {
+      fontSize: '12px',
       color: '#ffffff',
     }).setOrigin(0.5);
-    skip.on('pointerdown', () => this.closeRewardModal());
+    skip.on('pointerdown', () => this.skipReward());
     container.add([skip, skipText]);
     this.modal = container;
   }
@@ -1052,60 +1252,95 @@ export class GameScene extends Phaser.Scene {
   private openRewardModal(options: RolledEquipment[], phase: 'normalReward' | 'focusReward' | 'bossReward', titleText = 'Reward Select'): void {
     this.rewardPhase = phase;
     this.clearModal();
+    const shouldShowFirstRewardHint = phase !== 'bossReward' && !getSaveData().tutorial.firstRewardSeen;
+    if (shouldShowFirstRewardHint) {
+      updateSaveData((save) => ({
+        ...save,
+        tutorial: {
+          ...save.tutorial,
+          firstRewardSeen: true,
+        },
+      }));
+    }
 
     const container = this.add.container(0, 0).setDepth(100);
     const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72).setOrigin(0);
-    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 328, 482, 0x16111e)
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 336, 572, 0x16111e)
       .setStrokeStyle(2, 0xf0c85a);
-    const title = this.add.text(GAME_WIDTH / 2, 98, titleText, {
-      fontSize: '24px',
+    const title = this.add.text(GAME_WIDTH / 2, 58, titleText, {
+      fontSize: '22px',
       color: phase === 'focusReward' ? '#ffdb9a' : '#f8ddb0',
     }).setOrigin(0.5);
-    container.add([backdrop, panel, title]);
+    const hint = shouldShowFirstRewardHint
+      ? this.add.text(GAME_WIDTH / 2, 82, 'Choose 1 gear, skip for a small run bonus, or pick the same gear to enhance it.', {
+        fontSize: '9px',
+        color: '#d7cdbd',
+        wordWrap: { width: 292 },
+        align: 'center',
+      }).setOrigin(0.5)
+      : undefined;
+    container.add(hint ? [backdrop, panel, title, hint] : [backdrop, panel, title]);
 
     options.forEach((item, index) => {
-      const y = 160 + index * 92;
-      const card = this.add.rectangle(GAME_WIDTH / 2, y, 292, 76, 0x241b2d)
-        .setStrokeStyle(2, this.getRarityColor(item.rarity))
+      const currentItem = getSaveData().equipped[item.slot];
+      const isSameItem = currentItem?.id === item.id;
+      const y = 154 + index * 120;
+      const card = this.add.rectangle(GAME_WIDTH / 2, y, 306, 114, isSameItem ? 0x2e2a19 : 0x241b2d)
+        .setStrokeStyle(isSameItem ? 3 : 2, isSameItem ? 0x9dff7a : this.getRarityColor(item.rarity))
         .setInteractive({ useHandCursor: true });
-      const name = this.add.text(34, y - 28, `${item.nameKo} [${getRarityLabel(item.rarity)}]`, {
-        fontSize: '15px',
+      const name = this.add.text(30, y - 50, this.truncateText(`${this.getEquipmentDisplayName(item)} [${getRarityLabel(item.rarity)}]`, 31), {
+        fontSize: '13px',
         color: '#ffffff',
       });
-      const desc = this.add.text(34, y - 5, `${SLOT_LABELS[item.slot]} · ${item.playerDescription}`, {
-        fontSize: '11px',
-        color: '#d7cdbd',
-        wordWrap: { width: 270 },
+      this.addTagIcons(container, item, 30, y - 28);
+      const replaceText = this.add.text(30, y - 10, this.truncateText(this.getReplacementText(item), 41), {
+        fontSize: '10px',
+        color: isSameItem ? '#9dff7a' : '#ffdb9a',
       });
-      const optionsText = this.add.text(34, y + 22, this.formatOptions(item, 2), {
+      const desc = this.add.text(30, y + 7, this.truncateText(`${SLOT_LABELS[item.slot]} · ${item.playerDescription}`, 46), {
+        fontSize: '10px',
+        color: '#d7cdbd',
+      });
+      const optionsText = this.add.text(30, y + 26, this.truncateText(this.formatOptions(item, 3), 48), {
         fontSize: '10px',
         color: '#f0d8aa',
       });
+      const hint = this.add.text(30, y + 43, isSameItem ? 'Tap: upgrade existing gear' : 'Tap: equip and replace slot', {
+        fontSize: '9px',
+        color: '#9a8a78',
+      });
       card.on('pointerdown', () => this.equipReward(item));
-      container.add([card, name, desc, optionsText]);
+      container.add([card, name, replaceText, desc, optionsText, hint]);
     });
 
-    const skip = this.add.rectangle(GAME_WIDTH / 2, 464, 140, 34, 0x302631)
+    const skip = this.add.rectangle(GAME_WIDTH / 2, 538, 278, 34, 0x302631)
       .setStrokeStyle(1, 0x9a8a78)
       .setInteractive({ useHandCursor: true });
-    const skipText = this.add.text(GAME_WIDTH / 2, 464, '선택 안 함', {
-      fontSize: '15px',
+    const skipText = this.add.text(GAME_WIDTH / 2, 538, this.getSkipRewardLabel(phase), {
+      fontSize: '10px',
       color: '#ffffff',
     }).setOrigin(0.5);
-    skip.on('pointerdown', () => this.closeRewardModal());
+    skip.on('pointerdown', () => this.skipReward());
     container.add([skip, skipText]);
     this.modal = container;
   }
 
   private equipReward(item: RolledEquipment): void {
     const shouldClearStage = this.rewardPhase === 'bossReward';
-    updateSaveData((save) => ({
-      ...save,
-      equipped: {
-        ...save.equipped,
-        [item.slot]: item,
-      },
-    }));
+    const currentItem = getSaveData().equipped[item.slot];
+    const isUpgrade = currentItem?.id === item.id;
+    const shouldShowFirstEquipHint = !shouldClearStage && !getSaveData().tutorial.firstEquipSeen;
+    updateSaveData((save) => {
+      const currentItem = save.equipped[item.slot];
+      const nextItem = currentItem?.id === item.id ? this.upgradeEquipment(currentItem) : item;
+      return {
+        ...save,
+        equipped: {
+          ...save.equipped,
+          [item.slot]: nextItem,
+        },
+      };
+    });
     this.equippedCount = Object.keys(getSaveData().equipped).length;
     this.playerMaxHp = this.calculatePlayerMaxHp();
     this.playerHp = Math.min(this.playerMaxHp, this.playerHp + this.getEquippedOptionTotal('maxHpBonus'));
@@ -1115,6 +1350,33 @@ export class GameScene extends Phaser.Scene {
       this.completeStage();
       return;
     }
+    if (shouldShowFirstEquipHint) {
+      updateSaveData((save) => ({
+        ...save,
+        tutorial: {
+          ...save.tutorial,
+          firstEquipSeen: true,
+        },
+      }));
+      this.showFirstEquipModal(item, isUpgrade);
+      return;
+    }
+    this.closeRewardModal();
+  }
+
+  private skipReward(): void {
+    if (this.rewardPhase === 'bossReward') {
+      this.completeStage();
+      return;
+    }
+
+    this.skipBonusCount += 1;
+    this.runBonusMaxHp += SKIP_BONUS_MAX_HP;
+    this.playerMaxHp = this.calculatePlayerMaxHp();
+    this.playerHp = Math.min(this.playerMaxHp, this.playerHp + SKIP_BONUS_HEAL);
+    this.bossGauge = Math.min(100, this.bossGauge + SKIP_BONUS_BOSS_GAUGE);
+    playSound('equip');
+    this.refreshEquipmentPanel();
     this.closeRewardModal();
   }
 
@@ -1142,6 +1404,58 @@ export class GameScene extends Phaser.Scene {
     this.clearModal();
     this.rewardPhase = 'none';
     this.finishRun(true);
+  }
+
+  private showIntroStoryModal(): void {
+    this.rewardPhase = 'tutorial';
+    this.clearModal();
+
+    const container = this.add.container(0, 0).setDepth(100);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72).setOrigin(0);
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 360, 0x16111e)
+      .setStrokeStyle(2, 0xf0c85a);
+    const title = this.add.text(GAME_WIDTH / 2, 158, 'Prologue', {
+      fontSize: '25px',
+      color: '#f8ddb0',
+    }).setOrigin(0.5);
+    const body = this.add.text(42, 204, [
+      '폐허의 균열에서 여섯 개의 장비 슬롯이 깨어났습니다.',
+      '',
+      '당신은 남은 힘을 장비에 의존해 짧은 전투를 반복하고,',
+      '상자에서 얻은 선택으로 점점 강해져야 합니다.',
+      '',
+      'Stage 5의 망령을 쓰러뜨리면 균열은 닫힙니다.',
+    ].join('\n'), {
+      fontSize: '13px',
+      color: '#ffffff',
+      lineSpacing: 7,
+      wordWrap: { width: 278 },
+    });
+    const nextButton = this.add.rectangle(GAME_WIDTH / 2, 438, 154, 36, 0x26314a)
+      .setStrokeStyle(2, 0xf0c85a)
+      .setInteractive({ useHandCursor: true });
+    const nextText = this.add.text(GAME_WIDTH / 2, 438, 'Continue', {
+      fontSize: '16px',
+      color: '#ffffff',
+    }).setOrigin(0.5);
+
+    nextButton.on('pointerdown', () => {
+      updateSaveData((save) => ({
+        ...save,
+        tutorial: {
+          ...save.tutorial,
+          introSeen: true,
+        },
+      }));
+      if (!getSaveData().tutorial.stage1Seen) {
+        this.showTutorialModal();
+        return;
+      }
+      this.closeRewardModal();
+    });
+
+    container.add([backdrop, panel, title, body, nextButton, nextText]);
+    this.modal = container;
   }
 
   private showTutorialModal(): void {
@@ -1198,6 +1512,45 @@ export class GameScene extends Phaser.Scene {
     this.modal = container;
   }
 
+  private showFirstEquipModal(item: RolledEquipment, isUpgrade: boolean): void {
+    this.rewardPhase = 'tutorial';
+    this.clearModal();
+
+    const container = this.add.container(0, 0).setDepth(100);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.66).setOrigin(0);
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 306, 254, 0x16111e)
+      .setStrokeStyle(2, 0xf0c85a);
+    const title = this.add.text(GAME_WIDTH / 2, 224, 'Reward Equipped', {
+      fontSize: '22px',
+      color: '#f8ddb0',
+    }).setOrigin(0.5);
+    const body = this.add.text(48, 264, [
+      `${this.getEquipmentDisplayName(item)} 장비가 적용되었습니다.`,
+      '',
+      isUpgrade
+        ? '같은 장비를 골라 기존 장비의 +강화가 올라갔습니다.'
+        : '같은 슬롯의 기존 장비가 있었다면 새 장비로 교체됩니다.',
+      '',
+      '장비 효과는 즉시 공격 방식, 피해, 생존력, 시너지에 반영됩니다.',
+    ].join('\n'), {
+      fontSize: '13px',
+      color: '#ffffff',
+      lineSpacing: 6,
+      wordWrap: { width: 264 },
+    });
+    const okButton = this.add.rectangle(GAME_WIDTH / 2, 390, 132, 34, 0x26314a)
+      .setStrokeStyle(2, 0xf0c85a)
+      .setInteractive({ useHandCursor: true });
+    const okText = this.add.text(GAME_WIDTH / 2, 390, 'OK', {
+      fontSize: '15px',
+      color: '#ffffff',
+    }).setOrigin(0.5);
+
+    okButton.on('pointerdown', () => this.closeRewardModal());
+    container.add([backdrop, panel, title, body, okButton, okText]);
+    this.modal = container;
+  }
+
   private showEquipmentInfo(slot: EquipmentSlot): void {
     const item = getSaveData().equipped[slot];
     this.rewardPhase = 'infoPopup';
@@ -1207,7 +1560,7 @@ export class GameScene extends Phaser.Scene {
     const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.62).setOrigin(0);
     const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 308, 292, 0x16111e)
       .setStrokeStyle(2, 0x9a8a78);
-    const title = this.add.text(GAME_WIDTH / 2, 208, item?.nameKo ?? `${SLOT_LABELS[slot]} Empty`, {
+    const title = this.add.text(GAME_WIDTH / 2, 208, item ? this.getEquipmentDisplayName(item) : `${SLOT_LABELS[slot]} Empty`, {
       fontSize: '20px',
       color: '#f8ddb0',
     }).setOrigin(0.5);
@@ -1238,18 +1591,6 @@ export class GameScene extends Phaser.Scene {
     return this.rewardPhase !== 'none';
   }
 
-  private showHitEffect(x: number, y: number): void {
-    const slash = this.add.image(x, y, 'slash_arc').setDepth(6).setRotation(Phaser.Math.FloatBetween(-0.8, 0.8));
-    this.tweens.add({
-      targets: slash,
-      alpha: 0,
-      scaleX: 1.4,
-      scaleY: 1.4,
-      duration: 160,
-      onComplete: () => slash.destroy(),
-    });
-  }
-
   private flashPlayer(): void {
     if (!this.player) {
       return;
@@ -1269,8 +1610,47 @@ export class GameScene extends Phaser.Scene {
     this.chestText?.setText(this.chestCountInRun % 3 === 2 ? 'Focused Loot!' : `Chest ${this.chestCountInRun % 3}/3`);
   }
 
+  private updateFloatingHealthBars(): void {
+    if (this.player && this.playerHpBarBg && this.playerHpBarFill) {
+      const visible = this.elapsedMs <= this.playerHpBarVisibleUntilMs && this.playerHp < this.playerMaxHp;
+      const x = Phaser.Math.Clamp(this.player.x - 22, 4, GAME_WIDTH - 48);
+      const y = this.player.y - 22;
+      const ratio = Phaser.Math.Clamp(this.playerHp / this.playerMaxHp, 0, 1);
+      this.playerHpBarBg.setPosition(x, y).setVisible(visible);
+      this.playerHpBarFill.setPosition(x + 1, y).setSize(42 * ratio, 4).setVisible(visible);
+    }
+
+    if (this.boss && this.bossHpBarBg && this.bossHpBarFill) {
+      const x = Phaser.Math.Clamp(this.boss.sprite.x - 38, 4, GAME_WIDTH - 80);
+      const y = this.boss.sprite.y - this.boss.radius - 14;
+      const ratio = Phaser.Math.Clamp(this.boss.hp / this.boss.def.hp, 0, 1);
+      this.bossHpBarBg.setPosition(x, y);
+      this.bossHpBarFill.setPosition(x + 1, y).setSize(74 * ratio, 5);
+    }
+  }
+
   private refreshEquipmentPanel(): void {
     this.equipmentText?.setText(this.getEquippedSummary());
+  }
+
+  private upgradeEquipment(item: RolledEquipment): RolledEquipment {
+    const currentLevel = item.upgradeLevel ?? 0;
+    const nextLevel = Math.min(MAX_EQUIPMENT_UPGRADE, currentLevel + 1);
+    if (nextLevel === currentLevel) {
+      return item;
+    }
+
+    const multiplier = 1 + UPGRADE_POWER_STEP;
+    const rolledOptions: RolledEquipment['rolledOptions'] = {};
+    for (const [key, value] of Object.entries(item.rolledOptions)) {
+      rolledOptions[key as keyof RolledEquipment['rolledOptions']] = typeof value === 'number' ? Math.round(value * multiplier * 100) / 100 : value;
+    }
+
+    return {
+      ...item,
+      upgradeLevel: nextLevel,
+      rolledOptions,
+    };
   }
 
   private finishRun(cleared: boolean): void {
@@ -1353,7 +1733,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private calculatePlayerMaxHp(): number {
-    return Math.round(BASE_PLAYER_MAX_HP + this.getEquippedOptionTotal('maxHpBonus'));
+    return Math.round(BASE_PLAYER_MAX_HP + this.runBonusMaxHp + this.getEquippedOptionTotal('maxHpBonus'));
   }
 
   private getMultiplierProduct(key: keyof RolledEquipment['rolledOptions']): number {
@@ -1380,12 +1760,69 @@ export class GameScene extends Phaser.Scene {
 
   private getEquippedSummary(): string {
     const save = getSaveData();
-    const short = (slot: EquipmentSlot) => save.equipped[slot]?.nameKo.slice(0, 6) ?? 'Empty';
+    const short = (slot: EquipmentSlot) => {
+      const item = save.equipped[slot];
+      return item ? this.getEquipmentDisplayName(item).slice(0, 9) : 'Empty';
+    };
     return [
       `W ${short('weapon')} / N ${short('necklace')} / H ${short('helmet')}`,
       `G ${short('gloves')} / A ${short('armor')} / B ${short('belt')}`,
-      this.getSynergySummary(),
+      `${this.getSynergySummary()}${this.skipBonusCount > 0 ? ` / Skip HP +${this.runBonusMaxHp}` : ''}`,
     ].join('\n');
+  }
+
+  private getEquipmentDisplayName(item: RolledEquipment): string {
+    const level = item.upgradeLevel ?? 0;
+    return level > 0 ? `${item.nameKo} +${level}` : item.nameKo;
+  }
+
+  private addTagIcons(container: Phaser.GameObjects.Container, item: RolledEquipment, x: number, y: number): void {
+    const tags = this.getDisplayTags(item);
+    let cursorX = x;
+    tags.forEach((tag) => {
+      const config = TAG_ICON_CONFIG[tag];
+      const width = 50;
+      const pill = this.add.rectangle(cursorX, y, width, 15, config.color, 0.24)
+        .setOrigin(0, 0.5)
+        .setStrokeStyle(1, config.color, 0.95);
+      const label = this.add.text(cursorX + width / 2, y, config.label, {
+        fontSize: '8px',
+        color: '#ffffff',
+      }).setOrigin(0.5);
+      container.add([pill, label]);
+      cursorX += width + 4;
+    });
+  }
+
+  private getDisplayTags(item: RolledEquipment): Tag[] {
+    return [...item.tags]
+      .sort((a, b) => TAG_ICON_CONFIG[a].priority - TAG_ICON_CONFIG[b].priority)
+      .slice(0, 5);
+  }
+
+  private getReplacementText(item: RolledEquipment): string {
+    const currentItem = getSaveData().equipped[item.slot];
+    if (!currentItem) {
+      return `New ${SLOT_LABELS[item.slot]} slot`;
+    }
+    if (currentItem.id === item.id) {
+      const nextLevel = Math.min(MAX_EQUIPMENT_UPGRADE, (currentItem.upgradeLevel ?? 0) + 1);
+      return (currentItem.upgradeLevel ?? 0) >= MAX_EQUIPMENT_UPGRADE
+        ? `Same gear · already +${MAX_EQUIPMENT_UPGRADE}`
+        : `Same gear · upgrade ${this.getEquipmentDisplayName(currentItem)} → +${nextLevel}`;
+    }
+    return `Replaces ${this.getEquipmentDisplayName(currentItem)}`;
+  }
+
+  private getSkipRewardLabel(phase: 'normalReward' | 'focusReward' | 'bossReward'): string {
+    if (phase === 'bossReward') {
+      return '선택 안 함 · Stage Clear';
+    }
+    return `선택 안 함: HP+${SKIP_BONUS_MAX_HP} / Heal+${SKIP_BONUS_HEAL} / Boss+${SKIP_BONUS_BOSS_GAUGE}%`;
+  }
+
+  private truncateText(value: string, maxLength: number): string {
+    return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
   }
 
   private getSynergySummary(): string {
@@ -1409,7 +1846,7 @@ export class GameScene extends Phaser.Scene {
     return [
       `${SLOT_LABELS[item.slot]} / ${getRarityLabel(item.rarity)}`,
       item.playerDescription,
-      `Tags: ${item.tags.join(', ')}`,
+      `Tags: ${this.getDisplayTags(item).map((tag) => TAG_ICON_CONFIG[tag].label).join(' / ')}`,
       this.formatOptions(item, 8),
     ].join('\n');
   }
@@ -1417,8 +1854,51 @@ export class GameScene extends Phaser.Scene {
   private formatOptions(item: RolledEquipment, limit: number): string {
     return Object.entries(item.rolledOptions)
       .slice(0, limit)
-      .map(([key, value]) => `${key}: ${value}`)
+      .map(([key, value]) => `${this.formatOptionKey(key)} ${value}`)
       .join(' · ');
+  }
+
+  private formatOptionKey(key: string): string {
+    const labels: Record<string, string> = {
+      baseDamageMin: 'DMG-',
+      baseDamageMax: 'DMG+',
+      cooldownMs: 'CD',
+      rangePx: 'RNG',
+      radiusPx: 'AOE',
+      projectileSpeed: 'SPD',
+      pierceCount: 'PIR',
+      chainCount: 'CHN',
+      dotDamagePerSec: 'DOT',
+      dotDurationMs: 'DOT-T',
+      slowPercent: 'SLOW',
+      slowDurationMs: 'SLOW-T',
+      shieldAmount: 'SHD',
+      shieldDurationMs: 'SHD-T',
+      maxHpBonus: 'HP',
+      hpRegenPerSec: 'REG',
+      damageReductionPercent: 'DR',
+      lifestealPercent: 'LIFE',
+      mainDamageMultiplier: 'MAIN DMG',
+      supportDamageMultiplier: 'SUP DMG',
+      fireDamageMultiplier: 'FIR DMG',
+      iceDamageMultiplier: 'ICE DMG',
+      lightningDamageMultiplier: 'LIT DMG',
+      poisonDamageMultiplier: 'PSN DMG',
+      physicalDamageMultiplier: 'PHY DMG',
+      mainCooldownMultiplier: 'MAIN CD',
+      supportCooldownMultiplier: 'SUP CD',
+      areaRadiusMultiplier: 'AOE+',
+      projectileSpeedMultiplier: 'PRJ SPD',
+      meleeRangeMultiplier: 'MEL RNG',
+      orbitTickRateMultiplier: 'ORB SPD',
+      echoChance: 'ECHO',
+      echoDamageMultiplier: 'ECHO DMG',
+      critChance: 'CRIT',
+      critDamageMultiplier: 'CRIT DMG',
+      armorAmplifyMultiplier: 'AMP',
+      bossDamageMultiplier: 'BOSS',
+    };
+    return labels[key] ?? key;
   }
 
   private getRarityColor(rarity: RolledEquipment['rarity']): number {

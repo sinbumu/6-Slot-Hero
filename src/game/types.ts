@@ -93,6 +93,7 @@ export interface RolledEquipment extends EquipmentDef {
   instanceId: string;
   stageFound: number;
   rarity: Rarity;
+  upgradeLevel?: number;
   rolledOptions: Partial<Record<OptionKey, number>>;
 }
 
@@ -105,7 +106,10 @@ export interface SaveData {
     volume: number;
   };
   tutorial: {
+    introSeen: boolean;
     stage1Seen: boolean;
+    firstRewardSeen: boolean;
+    firstEquipSeen: boolean;
   };
   stats: {
     totalRuns: number;

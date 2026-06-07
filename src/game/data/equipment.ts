@@ -253,6 +253,7 @@ export function rollEquipment(definition: EquipmentDef, params: { stageId: numbe
     instanceId: createInstanceId(definition.id),
     stageFound: params.stageId,
     rarity: params.rarity,
+    upgradeLevel: 0,
     rolledOptions,
   };
 }
