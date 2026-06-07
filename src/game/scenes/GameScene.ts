@@ -18,6 +18,8 @@ interface EnemyState {
   hp: number;
   radius: number;
   contactCooldownMs: number;
+  slowMs: number;
+  slowMultiplier: number;
 }
 
 interface ChestState {
@@ -46,6 +48,7 @@ interface HazardState {
   damage: number;
   durationMs: number;
   tickMs: number;
+  target: 'player' | 'enemies';
 }
 
 interface BossProjectileState {
@@ -68,6 +71,19 @@ interface MainAttackStats {
   pierceCount: number;
   projectileSpeed: number;
   skillKind: SkillKind;
+}
+
+interface SupportSkillStats {
+  minDamage: number;
+  maxDamage: number;
+  cooldownMs: number;
+  radius: number;
+  dotDamagePerSec: number;
+  dotDurationMs: number;
+  slowPercent: number;
+  shieldAmount: number;
+  skillKind: SkillKind;
+  tags: readonly Tag[];
 }
 
 type CombatTarget =
@@ -139,8 +155,12 @@ export class GameScene extends Phaser.Scene {
   private bossProjectiles: BossProjectileState[] = [];
   private spawnTimerMs = 0;
   private attackTimerMs = 0;
+  private supportAttackTimerMs = 800;
   private elapsedMs = 0;
   private bossGauge = 0;
+  private shieldHp = 0;
+  private shieldMaxHp = 0;
+  private shieldRing?: Phaser.GameObjects.Arc;
   private kills = 0;
   private killsSinceLastChest = 0;
   private equippedCount = 0;
@@ -166,8 +186,12 @@ export class GameScene extends Phaser.Scene {
     this.bossProjectiles = [];
     this.spawnTimerMs = 0;
     this.attackTimerMs = 0;
+    this.supportAttackTimerMs = 800;
     this.elapsedMs = 0;
     this.bossGauge = 0;
+    this.shieldHp = 0;
+    this.shieldMaxHp = 0;
+    this.shieldRing = undefined;
     this.kills = 0;
     this.killsSinceLastChest = 0;
     this.equippedCount = Object.keys(getSaveData().equipped).length;
@@ -220,6 +244,7 @@ export class GameScene extends Phaser.Scene {
     this.updateSpawns(delta);
     this.updateEnemies(delta);
     this.updateBareFist(delta);
+    this.updateSupportSkill(delta);
     this.updateBossGauge(delta);
     this.updateBoss(delta);
     this.updateBossProjectiles(delta);
@@ -433,6 +458,8 @@ export class GameScene extends Phaser.Scene {
       hp: Math.round(def.hp * stageHpMultiplier),
       radius: sprite.width / 2,
       contactCooldownMs: 0,
+      slowMs: 0,
+      slowMultiplier: 1,
     });
   }
 
@@ -444,7 +471,9 @@ export class GameScene extends Phaser.Scene {
     for (const enemy of this.enemies) {
       const direction = new Phaser.Math.Vector2(this.player.x - enemy.sprite.x, this.player.y - enemy.sprite.y);
       if (direction.lengthSq() > 0) {
-        direction.normalize().scale((enemy.def.moveSpeed * delta) / 1000);
+        enemy.slowMs = Math.max(0, enemy.slowMs - delta);
+        const speedMultiplier = enemy.slowMs > 0 ? enemy.slowMultiplier : 1;
+        direction.normalize().scale((enemy.def.moveSpeed * speedMultiplier * delta) / 1000);
         enemy.sprite.setPosition(enemy.sprite.x + direction.x, enemy.sprite.y + direction.y);
       }
 
@@ -555,34 +584,195 @@ export class GameScene extends Phaser.Scene {
   }
 
   private performPoisonChakramAttack(attackStats: MainAttackStats): boolean {
-    const targets = this.findCombatTargetsInRadius(this.player!.x, this.player!.y, attackStats.range + 120)
-      .slice(0, Math.max(2, Math.floor(attackStats.pierceCount)));
-    if (targets.length === 0) {
+    const firstTarget = this.findNearestCombatTarget(attackStats.range + 120);
+    if (!firstTarget || !this.player) {
       return false;
     }
 
-    const chakram = this.add.image(this.player!.x, this.player!.y, 'projectile_orb')
+    const startX = this.player.x;
+    const startY = this.player.y;
+    const targetPosition = this.getTargetPosition(firstTarget);
+    const direction = new Phaser.Math.Vector2(targetPosition.x - startX, targetPosition.y - startY).normalize();
+    const destination = {
+      x: Phaser.Math.Clamp(startX + direction.x * (attackStats.range + 120), 0, GAME_WIDTH),
+      y: Phaser.Math.Clamp(startY + direction.y * (attackStats.range + 120), PLAY_AREA_TOP, PLAY_AREA_BOTTOM),
+    };
+    const hitTargetIds = new Set<string>();
+    const maxHits = Math.max(2, Math.floor(attackStats.pierceCount));
+
+    const chakram = this.add.image(startX, startY, 'projectile_orb')
       .setTint(0x60d96f)
       .setScale(1.45)
       .setDepth(7);
     this.drawPoisonTrail(chakram);
-    const finalTarget = this.getTargetPosition(targets[targets.length - 1]);
-    this.tweens.add({
-      targets: chakram,
-      x: finalTarget.x,
-      y: finalTarget.y,
-      angle: 360,
-      duration: 220,
-      yoyo: true,
-      onComplete: () => chakram.destroy(),
+    const hitTimer = this.time.addEvent({
+      delay: 28,
+      repeat: 14,
+      callback: () => {
+        if (!chakram.active || hitTargetIds.size >= maxHits) {
+          hitTimer.remove();
+          return;
+        }
+        for (const target of this.findCombatTargetsInRadius(chakram.x, chakram.y, 18)) {
+          const targetId = this.getCombatTargetId(target);
+          if (hitTargetIds.has(targetId)) {
+            continue;
+          }
+          hitTargetIds.add(targetId);
+          const { x, y } = this.getTargetPosition(target);
+          this.damageCombatTarget(target, this.rollMainDamage(attackStats) * 0.82, 0x74ff83);
+          this.addPoisonTickText(x, y);
+          if (hitTargetIds.size >= maxHits) {
+            break;
+          }
+        }
+      },
     });
 
-    for (const target of targets) {
-      const { x, y } = this.getTargetPosition(target);
-      this.damageCombatTarget(target, this.rollMainDamage(attackStats) * 0.82, 0x74ff83);
-      this.addPoisonTickText(x, y);
-    }
+    const outbound = this.tweens.add({
+      targets: chakram,
+      x: destination.x,
+      y: destination.y,
+      angle: 360,
+      duration: 260,
+      onComplete: () => {
+        outbound.remove();
+        this.tweens.add({
+          targets: chakram,
+          x: startX,
+          y: startY,
+          angle: 720,
+          duration: 220,
+          onComplete: () => {
+            hitTimer.remove();
+            chakram.destroy();
+          },
+        });
+      },
+    });
     return true;
+  }
+
+  private updateSupportSkill(delta: number): void {
+    const necklace = getSaveData().equipped.necklace;
+    if (!necklace || necklace.skillKind === 'passiveModifier') {
+      return;
+    }
+
+    this.supportAttackTimerMs -= delta;
+    if (this.supportAttackTimerMs > 0) {
+      return;
+    }
+
+    const stats = this.getSupportSkillStats(necklace);
+    let didCast = false;
+    if (stats.skillKind === 'thunderAoe') {
+      didCast = this.castThunderAoe(stats);
+    } else if (stats.skillKind === 'shieldPulse') {
+      didCast = this.castShieldPulse(stats);
+    } else if (stats.skillKind === 'frostPulse') {
+      didCast = this.castFrostPulse(stats);
+    } else if (stats.skillKind === 'poisonPool') {
+      didCast = this.castPoisonPool(stats);
+    }
+
+    this.supportAttackTimerMs = didCast ? stats.cooldownMs : 350;
+  }
+
+  private castThunderAoe(stats: SupportSkillStats): boolean {
+    const target = this.findNearestCombatTarget(220);
+    if (!target) {
+      return false;
+    }
+
+    const { x, y } = this.getTargetPosition(target);
+    const warning = this.add.circle(x, y, stats.radius, 0xffef6a, 0.18)
+      .setStrokeStyle(2, 0xffef6a, 0.95)
+      .setDepth(8);
+    this.time.delayedCall(420, () => {
+      warning.destroy();
+      if (this.isRunOver || this.isGameplayPaused()) {
+        return;
+      }
+      this.drawLightningSpark(x, y);
+      for (const hitTarget of this.findCombatTargetsInRadius(x, y, stats.radius)) {
+        this.damageCombatTarget(hitTarget, this.rollSupportDamage(stats), 0xffef6a);
+      }
+    });
+    return true;
+  }
+
+  private castShieldPulse(stats: SupportSkillStats): boolean {
+    if (!this.player) {
+      return false;
+    }
+
+    this.shieldMaxHp = Math.max(this.shieldMaxHp, stats.shieldAmount);
+    this.shieldHp = Math.min(this.shieldMaxHp, this.shieldHp + stats.shieldAmount);
+    this.shieldRing?.destroy();
+    this.shieldRing = this.add.circle(this.player.x, this.player.y, 22, 0x8ed6ff, 0.14)
+      .setStrokeStyle(2, 0x8ed6ff, 0.9)
+      .setDepth(11);
+    this.tweens.add({
+      targets: this.shieldRing,
+      scaleX: 1.35,
+      scaleY: 1.35,
+      alpha: 0.45,
+      duration: 240,
+      yoyo: true,
+    });
+    this.explodeAt(this.player.x, this.player.y, Math.max(34, stats.radius * 0.7), this.rollSupportDamage(stats) * 0.45);
+    return true;
+  }
+
+  private castFrostPulse(stats: SupportSkillStats): boolean {
+    if (!this.player) {
+      return false;
+    }
+
+    const pulse = this.add.circle(this.player.x, this.player.y, stats.radius, 0x7ae7ff, 0.16)
+      .setStrokeStyle(2, 0x7ae7ff, 0.9)
+      .setDepth(8);
+    for (const target of this.findCombatTargetsInRadius(this.player.x, this.player.y, stats.radius)) {
+      this.damageCombatTarget(target, this.rollSupportDamage(stats) * 0.75, 0x7ae7ff);
+      this.applySlow(target, stats.slowPercent, 1200 + this.getEquippedOptionTotal('slowDurationMs'));
+    }
+    this.tweens.add({
+      targets: pulse,
+      alpha: 0,
+      scaleX: 1.35,
+      scaleY: 1.35,
+      duration: 320,
+      onComplete: () => pulse.destroy(),
+    });
+    return true;
+  }
+
+  private castPoisonPool(stats: SupportSkillStats): boolean {
+    const target = this.findNearestCombatTarget(230);
+    if (!target) {
+      return false;
+    }
+
+    const { x, y } = this.getTargetPosition(target);
+    this.addEnemyHazard(x, y, stats.radius, Math.max(1, stats.dotDamagePerSec), stats.dotDurationMs, 0x74ff83);
+    this.applySlow(target, stats.slowPercent, Math.min(1200, stats.dotDurationMs));
+    return true;
+  }
+
+  private applySlow(target: CombatTarget, slowPercent: number, durationMs: number): void {
+    if (target.kind !== 'enemy' || slowPercent <= 0) {
+      return;
+    }
+
+    target.enemy.slowMs = Math.max(target.enemy.slowMs, durationMs);
+    target.enemy.slowMultiplier = Phaser.Math.Clamp(1 - slowPercent, 0.35, 1);
+    target.enemy.sprite.setTint(0x7ae7ff);
+    this.time.delayedCall(Math.min(260, durationMs), () => {
+      if (target.enemy.sprite.active) {
+        target.enemy.sprite.clearTint();
+      }
+    });
   }
 
   private updateBossGauge(delta: number): void {
@@ -819,6 +1009,31 @@ export class GameScene extends Phaser.Scene {
       damage,
       durationMs,
       tickMs: 0,
+      target: 'player',
+    });
+  }
+
+  private addEnemyHazard(x: number, y: number, radius: number, damagePerSecond: number, durationMs: number, color: number): void {
+    const shape = this.add.circle(x, y, radius, color, 0.2)
+      .setStrokeStyle(2, color, 0.85)
+      .setDepth(6);
+    this.hazards.push({
+      id: `enemy_hazard_${this.elapsedMs}_${Math.random()}`,
+      shape,
+      x,
+      y,
+      radius,
+      damage: Math.max(1, damagePerSecond * 0.5),
+      durationMs,
+      tickMs: 0,
+      target: 'enemies',
+    });
+    this.tweens.add({
+      targets: shape,
+      alpha: 0.08,
+      duration: 420,
+      yoyo: true,
+      repeat: Math.max(1, Math.floor(durationMs / 840)),
     });
   }
 
@@ -830,9 +1045,17 @@ export class GameScene extends Phaser.Scene {
     for (const hazard of [...this.hazards]) {
       hazard.durationMs -= delta;
       hazard.tickMs -= delta;
-      if (hazard.tickMs <= 0 && this.isCircleOverlap(hazard.x, hazard.y, hazard.radius, this.player.x, this.player.y, PLAYER_RADIUS)) {
+      if (hazard.tickMs <= 0 && hazard.target === 'player' && this.isCircleOverlap(hazard.x, hazard.y, hazard.radius, this.player.x, this.player.y, PLAYER_RADIUS)) {
         this.damagePlayer(hazard.damage);
         hazard.tickMs = 550;
+      }
+      if (hazard.tickMs <= 0 && hazard.target === 'enemies') {
+        for (const target of this.findCombatTargetsInRadius(hazard.x, hazard.y, hazard.radius)) {
+          const position = this.getTargetPosition(target);
+          this.damageCombatTarget(target, hazard.damage, 0x74ff83);
+          this.addPoisonTickText(position.x, position.y);
+        }
+        hazard.tickMs = 500;
       }
       if (hazard.durationMs <= 0) {
         hazard.shape.destroy();
@@ -902,6 +1125,10 @@ export class GameScene extends Phaser.Scene {
     return a.kind === 'boss' ? a.boss.def.id === (b as { kind: 'boss'; boss: BossState }).boss.def.id : a.enemy.id === (b as { kind: 'enemy'; enemy: EnemyState }).enemy.id;
   }
 
+  private getCombatTargetId(target: CombatTarget): string {
+    return target.kind === 'boss' ? `boss_${target.boss.def.id}` : target.enemy.id;
+  }
+
   private rollMainDamage(attackStats: MainAttackStats): number {
     let damage = Phaser.Math.FloatBetween(attackStats.minDamage, attackStats.maxDamage) * attackStats.damageMultiplier;
     const critChance = Phaser.Math.Clamp(this.getEquippedOptionTotal('critChance'), 0, 0.55);
@@ -909,6 +1136,10 @@ export class GameScene extends Phaser.Scene {
       damage *= this.getMultiplierProduct('critDamageMultiplier');
     }
     return damage;
+  }
+
+  private rollSupportDamage(stats: SupportSkillStats): number {
+    return Phaser.Math.FloatBetween(stats.minDamage, stats.maxDamage) * this.getSupportDamageMultiplier(stats.tags);
   }
 
   private drawMeleeSlash(fromX: number, fromY: number, toX: number, toY: number, range: number): void {
@@ -1146,7 +1377,17 @@ export class GameScene extends Phaser.Scene {
 
   private damagePlayer(rawDamage: number): void {
     const damageReduction = Phaser.Math.Clamp(this.getEquippedOptionTotal('damageReductionPercent'), 0, 0.6);
-    this.playerHp = Math.max(0, this.playerHp - rawDamage * (1 - damageReduction));
+    let incomingDamage = rawDamage * (1 - damageReduction);
+    if (this.shieldHp > 0) {
+      const absorbedDamage = Math.min(this.shieldHp, incomingDamage);
+      this.shieldHp -= absorbedDamage;
+      incomingDamage -= absorbedDamage;
+      if (this.shieldHp <= 0) {
+        this.shieldRing?.destroy();
+        this.shieldRing = undefined;
+      }
+    }
+    this.playerHp = Math.max(0, this.playerHp - incomingDamage);
     this.playerHpBarVisibleUntilMs = this.elapsedMs + 1000;
     this.updateFloatingHealthBars();
     this.cameras.main.shake(90, 0.004);
@@ -1661,6 +1902,10 @@ export class GameScene extends Phaser.Scene {
       this.playerHpBarBg.setPosition(x, y).setVisible(visible);
       this.playerHpBarFill.setPosition(x + 1, y).setSize(42 * ratio, 4).setVisible(visible);
     }
+    if (this.player && this.shieldRing) {
+      this.shieldRing.setPosition(this.player.x, this.player.y);
+      this.shieldRing.setAlpha(Phaser.Math.Clamp(this.shieldHp / Math.max(1, this.shieldMaxHp), 0.18, 0.75));
+    }
 
     if (this.boss && this.bossHpBarBg && this.bossHpBarFill) {
       const x = Phaser.Math.Clamp(this.boss.sprite.x - 38, 4, GAME_WIDTH - 80);
@@ -1741,6 +1986,27 @@ export class GameScene extends Phaser.Scene {
     };
   }
 
+  private getSupportSkillStats(necklace: RolledEquipment): SupportSkillStats {
+    const radius = (necklace.rolledOptions.radiusPx ?? 48) * this.getMultiplierProduct('areaRadiusMultiplier');
+    const cooldown = (necklace.rolledOptions.cooldownMs ?? 5200) * this.getMultiplierProduct('supportCooldownMultiplier');
+    const dotDurationBonus = this.getEquippedOptionTotal('dotDurationMs') - (necklace.rolledOptions.dotDurationMs ?? 0);
+    const slowBonus = this.getEquippedOptionTotal('slowPercent') - (necklace.rolledOptions.slowPercent ?? 0);
+    const shieldBonus = this.getEquippedOptionTotal('shieldAmount') - (necklace.rolledOptions.shieldAmount ?? 0);
+    const dotDuration = (necklace.rolledOptions.dotDurationMs ?? 2800) + dotDurationBonus;
+    return {
+      minDamage: necklace.rolledOptions.baseDamageMin ?? 6,
+      maxDamage: necklace.rolledOptions.baseDamageMax ?? 12,
+      cooldownMs: Phaser.Math.Clamp(cooldown, 900, 9000),
+      radius: Phaser.Math.Clamp(radius, 28, 130),
+      dotDamagePerSec: (necklace.rolledOptions.dotDamagePerSec ?? 2) * this.getSupportDamageMultiplier(necklace.tags),
+      dotDurationMs: Phaser.Math.Clamp(dotDuration, 600, 9000),
+      slowPercent: Phaser.Math.Clamp((necklace.rolledOptions.slowPercent ?? 0) + slowBonus, 0, 0.75),
+      shieldAmount: Math.max(0, (necklace.rolledOptions.shieldAmount ?? 0) + shieldBonus),
+      skillKind: necklace.skillKind,
+      tags: necklace.tags,
+    };
+  }
+
   private getBaseRangeForSkill(skillKind: SkillKind): number {
     if (skillKind === 'fireProjectileExplosion' || skillKind === 'returningPoisonProjectile') {
       return 170;
@@ -1756,6 +2022,26 @@ export class GameScene extends Phaser.Scene {
 
   private getTaggedDamageMultiplier(tags: readonly string[]): number {
     let multiplier = this.getMultiplierProduct('mainDamageMultiplier');
+    if (tags.includes('fire')) {
+      multiplier *= this.getMultiplierProduct('fireDamageMultiplier');
+    }
+    if (tags.includes('ice')) {
+      multiplier *= this.getMultiplierProduct('iceDamageMultiplier');
+    }
+    if (tags.includes('lightning')) {
+      multiplier *= this.getMultiplierProduct('lightningDamageMultiplier');
+    }
+    if (tags.includes('poison')) {
+      multiplier *= this.getMultiplierProduct('poisonDamageMultiplier');
+    }
+    if (tags.includes('physical')) {
+      multiplier *= this.getMultiplierProduct('physicalDamageMultiplier');
+    }
+    return multiplier;
+  }
+
+  private getSupportDamageMultiplier(tags: readonly string[]): number {
+    let multiplier = this.getMultiplierProduct('supportDamageMultiplier');
     if (tags.includes('fire')) {
       multiplier *= this.getMultiplierProduct('fireDamageMultiplier');
     }
