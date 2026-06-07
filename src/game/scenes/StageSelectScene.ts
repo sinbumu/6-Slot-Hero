@@ -69,15 +69,10 @@ export class StageSelectScene extends Phaser.Scene {
       lineSpacing: 7,
     });
 
-    this.add.text(44, 556, `Volume: ${Math.round(save.settings.volume * 100)}%`, {
-      fontSize: '15px',
-      color: '#cfc4b2',
-    });
-
-    const volumeButton = this.add.rectangle(258, 564, 116, 30, 0x26314a)
+    const volumeButton = this.add.rectangle(GAME_WIDTH / 2, 564, 132, 30, 0x26314a)
       .setStrokeStyle(1, 0xf0c85a)
       .setInteractive({ useHandCursor: true });
-    this.add.text(258, 564, save.settings.volume > 0 ? 'Sound On' : 'Muted', {
+    this.add.text(GAME_WIDTH / 2, 564, save.settings.volume > 0 ? 'Sound On' : 'Sound Off', {
       fontSize: '13px',
       color: '#ffffff',
     }).setOrigin(0.5);
@@ -91,6 +86,9 @@ export class StageSelectScene extends Phaser.Scene {
         },
       }));
       applySceneVolume(this);
+      if (getSaveData().settings.volume > 0) {
+        playBgm(this, 'stage_select');
+      }
       this.render();
     });
 

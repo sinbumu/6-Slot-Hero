@@ -96,6 +96,15 @@ export function playBgm(scene: Phaser.Scene, cue: BgmCue): void {
     currentBgmKey = key;
     return;
   }
+  if (scene.sound.locked) {
+    currentBgmKey = key;
+    scene.sound.once('unlocked', () => {
+      if (currentBgmKey === key) {
+        playBgm(scene, cue);
+      }
+    });
+    return;
+  }
   currentBgmKey = key;
   currentBgm = scene.sound.add(key, {
     loop: true,

@@ -1758,22 +1758,22 @@ export class GameScene extends Phaser.Scene {
 
     const container = this.add.container(0, 0).setDepth(100);
     const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72).setOrigin(0);
-    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 360, 0x16111e)
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 376, 0x16111e)
       .setStrokeStyle(2, 0xf0c85a);
-    const title = this.add.text(GAME_WIDTH / 2, 158, story.title, {
-      fontSize: '23px',
+    const title = this.add.text(GAME_WIDTH / 2, 154, story.title, {
+      fontSize: '20px',
       color: '#f8ddb0',
     }).setOrigin(0.5);
-    const body = this.add.text(42, 204, story.lines.join('\n\n'), {
+    const body = this.add.text(42, 198, story.lines.join('\n\n'), {
       fontSize: '13px',
       color: '#ffffff',
       lineSpacing: 7,
       wordWrap: { width: 278 },
     });
-    const nextButton = this.add.rectangle(GAME_WIDTH / 2, 438, 154, 36, 0x26314a)
+    const nextButton = this.add.rectangle(GAME_WIDTH / 2, 450, 154, 36, 0x26314a)
       .setStrokeStyle(2, 0xf0c85a)
       .setInteractive({ useHandCursor: true });
-    const nextText = this.add.text(GAME_WIDTH / 2, 438, 'Continue', {
+    const nextText = this.add.text(GAME_WIDTH / 2, 450, 'Continue', {
       fontSize: '16px',
       color: '#ffffff',
     }).setOrigin(0.5);
