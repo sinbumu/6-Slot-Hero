@@ -1,0 +1,56 @@
+# 6-Slot Hero
+
+짧은 스테이지를 반복하며 6개 장비 슬롯을 파밍해 성장하는 웹 기반 파밍 서바이버 RPG입니다.
+
+## Play
+
+- Deployment URL: TBD
+- YouTube Demo: TBD
+
+## Controls
+
+- PC: WASD / Arrow Keys
+- Mobile: Drag in the lower combat/control/equipment area
+- Equipment: Tap an equipment slot to view item details
+- Rewards: Tap a card to equip it, or choose `선택 안 함`
+
+## Core Systems
+
+- 6 equipment slots: Weapon, Necklace, Helmet, Gloves, Armor, Belt
+- Automatic attacks driven by equipped gear
+- Monster spawning, chasing, contact damage, and death flow
+- Chest reward 3-choice with skip option
+- Focused loot every 3 chests with slot selection
+- Stage unlock and cleared stage persistence
+- Stage-specific bosses with charge, AoE, projectile, line, and hazard patterns
+- Boss reward selection and clear result flow
+- localStorage save data with reset support
+- Code-generated temporary art and WebAudio sound cues
+
+## Tech Stack
+
+- Vite
+- TypeScript
+- Phaser 3
+- CSS
+- localStorage
+
+## Local Development
+
+```bash
+npm install
+npm run dev
+```
+
+## Build
+
+```bash
+npm run build
+npm run preview
+```
+
+## Assets & Licenses
+
+The current MVP uses temporary code-generated Phaser textures and WebAudio-generated sound cues. No external copyrighted game assets are included.
+
+External assets, if added later, must be documented in `public/assets/README.md` with source and license information.

@@ -12,6 +12,7 @@ export function getDefaultSaveData(): SaveData {
     clearedStages: [],
     equipped: {},
     settings: { volume: 0.7 },
+    tutorial: { stage1Seen: false },
     stats: { totalRuns: 0, totalKills: 0, bestStage: 1 },
   };
 }
@@ -77,6 +78,9 @@ function normalizeSaveData(input: Partial<SaveData>): SaveData {
     equipped: input.equipped ?? {},
     settings: {
       volume: clamp01(input.settings?.volume ?? defaults.settings.volume),
+    },
+    tutorial: {
+      stage1Seen: typeof input.tutorial?.stage1Seen === 'boolean' ? input.tutorial.stage1Seen : false,
     },
     stats: {
       totalRuns: clampNonNegativeInteger(input.stats?.totalRuns ?? 0),

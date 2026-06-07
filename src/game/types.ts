@@ -104,6 +104,9 @@ export interface SaveData {
   settings: {
     volume: number;
   };
+  tutorial: {
+    stage1Seen: boolean;
+  };
   stats: {
     totalRuns: number;
     totalKills: number;

@@ -4,7 +4,8 @@ import { BOSS_DEFS, type BossDef, type BossPatternDef } from '../data/bosses';
 import { ENEMY_DEFS, type EnemyDef } from '../data/enemies';
 import { generateRewardOptions, getRarityLabel } from '../data/equipment';
 import { getSaveData, updateSaveData } from '../storage';
-import type { EquipmentSlot, RolledEquipment, RunResult } from '../types';
+import { playSound } from '../systems/SoundSystem';
+import type { EquipmentSlot, RolledEquipment, RunResult, SkillKind } from '../types';
 
 interface GameSceneData {
   stageId?: number;
@@ -62,9 +63,18 @@ interface MainAttackStats {
   cooldownMs: number;
   range: number;
   damageMultiplier: number;
+  radius: number;
+  chainCount: number;
+  pierceCount: number;
+  projectileSpeed: number;
+  skillKind: SkillKind;
 }
 
-type RewardPhase = 'none' | 'normalReward' | 'focusSlotSelect' | 'focusReward' | 'bossReward' | 'infoPopup';
+type CombatTarget =
+  | { kind: 'enemy'; enemy: EnemyState }
+  | { kind: 'boss'; boss: BossState };
+
+type RewardPhase = 'none' | 'normalReward' | 'focusSlotSelect' | 'focusReward' | 'bossReward' | 'infoPopup' | 'tutorial';
 
 const EQUIPMENT_SLOTS = Object.keys(SLOT_LABELS) as EquipmentSlot[];
 const PLAY_AREA_TOP = 76;
@@ -72,12 +82,14 @@ const PLAY_AREA_BOTTOM = 474;
 const PLAYER_RADIUS = 10;
 const BASE_PLAYER_MAX_HP = 100;
 const PLAYER_MOVE_SPEED = 130;
-const BARE_FIST_COOLDOWN_MS = 550;
-const BARE_FIST_RANGE = 34;
+const BARE_FIST_COOLDOWN_MS = 420;
+const BARE_FIST_RANGE = 68;
 const MAX_ENEMIES = 80;
 const CHEST_DROP_CHANCE = 0.18;
 const BOSS_GAUGE_TIME_PER_SEC = 1.25;
 const BOSS_GAUGE_PER_KILL = 2.2;
+const TAP_MAX_DISTANCE = 8;
+const TAP_MAX_MS = 200;
 
 export class GameScene extends Phaser.Scene {
   private stageId = 1;
@@ -156,6 +168,9 @@ export class GameScene extends Phaser.Scene {
     this.createButton(GAME_WIDTH / 2, 614, 'End Test Run', () => {
       this.finishRun(false);
     });
+    if (this.stageId === 1 && !getSaveData().tutorial.stage1Seen) {
+      this.showTutorialModal();
+    }
   }
 
   update(_time: number, delta: number): void {
@@ -222,6 +237,11 @@ export class GameScene extends Phaser.Scene {
 
   private createEquipmentPanel(): void {
     this.add.rectangle(0, 476, GAME_WIDTH, 96, 0x12101a).setOrigin(0);
+    this.add.rectangle(GAME_WIDTH / 2, 476, GAME_WIDTH, 2, 0xf0c85a, 0.35);
+    this.add.text(GAME_WIDTH / 2, 474, 'Drag lower area to move · Tap slot for info', {
+      fontSize: '10px',
+      color: '#a99d8c',
+    }).setOrigin(0.5, 1);
     this.equipmentText = this.add.text(GAME_WIDTH / 2, 486, this.getEquippedSummary(), {
       fontSize: '11px',
       color: '#d7cdbd',
@@ -241,7 +261,11 @@ export class GameScene extends Phaser.Scene {
         fontSize: '10px',
         color: '#f0d8aa',
       }).setOrigin(0.5);
-      button.on('pointerdown', () => this.showEquipmentInfo(slot));
+      button.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+        if (this.isTap(pointer)) {
+          this.showEquipmentInfo(slot);
+        }
+      });
     });
   }
 
@@ -280,6 +304,12 @@ export class GameScene extends Phaser.Scene {
     if (this.isPointerMoving) {
       this.pointerMoveVector.normalize();
     }
+  }
+
+  private isTap(pointer: Phaser.Input.Pointer): boolean {
+    const distance = Phaser.Math.Distance.Between(pointer.downX, pointer.downY, pointer.x, pointer.y);
+    const durationMs = pointer.upTime - pointer.downTime;
+    return distance <= TAP_MAX_DISTANCE && durationMs <= TAP_MAX_MS;
   }
 
   private updatePlayer(delta: number): void {
@@ -372,19 +402,120 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    const damage = Phaser.Math.FloatBetween(attackStats.minDamage, attackStats.maxDamage) * attackStats.damageMultiplier;
-    const bossDistance = this.boss ? Phaser.Math.Distance.Between(this.player.x, this.player.y, this.boss.sprite.x, this.boss.sprite.y) : Number.POSITIVE_INFINITY;
-    const target = this.findNearestEnemy(attackStats.range);
-    if (this.boss && bossDistance <= attackStats.range + this.boss.radius && (!target || bossDistance <= attackStats.range)) {
-      this.damageBoss(damage);
-      this.showHitEffect(this.boss.sprite.x, this.boss.sprite.y);
-    } else if (target) {
-      this.damageEnemy(target, damage);
-      this.showHitEffect(target.sprite.x, target.sprite.y);
-    } else {
+    const didAttack = this.performMainAttack(attackStats);
+    if (!didAttack) {
       return;
     }
     this.attackTimerMs = attackStats.cooldownMs;
+  }
+
+  private performMainAttack(attackStats: MainAttackStats): boolean {
+    if (attackStats.skillKind === 'lightningStrike') {
+      return this.performLightningAttack(attackStats);
+    }
+    if (attackStats.skillKind === 'fireProjectileExplosion') {
+      return this.performFireProjectileAttack(attackStats);
+    }
+    if (attackStats.skillKind === 'returningPoisonProjectile') {
+      return this.performPoisonChakramAttack(attackStats);
+    }
+    return this.performMeleeAttack(attackStats);
+  }
+
+  private performMeleeAttack(attackStats: MainAttackStats): boolean {
+    const targets = this.findCombatTargetsInRadius(this.player!.x, this.player!.y, attackStats.range)
+      .slice(0, attackStats.skillKind === 'slashCone' ? 3 : 1);
+    if (targets.length === 0) {
+      return false;
+    }
+
+    for (const target of targets) {
+      const { x, y } = this.getTargetPosition(target);
+      this.damageCombatTarget(target, this.rollMainDamage(attackStats));
+      this.showHitEffect(x, y);
+    }
+    return true;
+  }
+
+  private performLightningAttack(attackStats: MainAttackStats): boolean {
+    const firstTarget = this.findNearestCombatTarget(attackStats.range + 48);
+    if (!firstTarget) {
+      return false;
+    }
+
+    const chainedTargets: CombatTarget[] = [firstTarget];
+    const chainCount = Math.max(1, Math.floor(attackStats.chainCount));
+    for (const candidate of this.findCombatTargetsInRadius(this.getTargetPosition(firstTarget).x, this.getTargetPosition(firstTarget).y, 96)) {
+      if (chainedTargets.length > chainCount) {
+        break;
+      }
+      if (!this.isSameTarget(candidate, firstTarget)) {
+        chainedTargets.push(candidate);
+      }
+    }
+
+    let from = { x: this.player!.x, y: this.player!.y };
+    chainedTargets.forEach((target, index) => {
+      const to = this.getTargetPosition(target);
+      this.drawLightningLine(from.x, from.y, to.x, to.y);
+      this.damageCombatTarget(target, this.rollMainDamage(attackStats) * (index === 0 ? 1 : 0.72));
+      from = to;
+    });
+    return true;
+  }
+
+  private performFireProjectileAttack(attackStats: MainAttackStats): boolean {
+    const target = this.findNearestCombatTarget(attackStats.range + 140);
+    if (!target || !this.player) {
+      return false;
+    }
+
+    const destination = this.getTargetPosition(target);
+    const projectile = this.add.image(this.player.x, this.player.y, 'projectile_orb')
+      .setTint(0xff7a3d)
+      .setDepth(7);
+    const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, destination.x, destination.y);
+    const duration = Phaser.Math.Clamp((distance / attackStats.projectileSpeed) * 1000, 120, 650);
+    this.tweens.add({
+      targets: projectile,
+      x: destination.x,
+      y: destination.y,
+      duration,
+      onComplete: () => {
+        projectile.destroy();
+        this.explodeAt(destination.x, destination.y, attackStats.radius, this.rollMainDamage(attackStats));
+      },
+    });
+    return true;
+  }
+
+  private performPoisonChakramAttack(attackStats: MainAttackStats): boolean {
+    const targets = this.findCombatTargetsInRadius(this.player!.x, this.player!.y, attackStats.range + 120)
+      .slice(0, Math.max(2, Math.floor(attackStats.pierceCount)));
+    if (targets.length === 0) {
+      return false;
+    }
+
+    const chakram = this.add.image(this.player!.x, this.player!.y, 'projectile_orb')
+      .setTint(0x60d96f)
+      .setDepth(7);
+    const finalTarget = this.getTargetPosition(targets[targets.length - 1]);
+    this.tweens.add({
+      targets: chakram,
+      x: finalTarget.x,
+      y: finalTarget.y,
+      angle: 360,
+      duration: 220,
+      yoyo: true,
+      onComplete: () => chakram.destroy(),
+    });
+
+    for (const target of targets) {
+      const { x, y } = this.getTargetPosition(target);
+      this.damageCombatTarget(target, this.rollMainDamage(attackStats) * 0.82);
+      this.addPoisonTickText(x, y);
+    }
+    return true;
   }
 
   private updateBossGauge(delta: number): void {
@@ -403,6 +534,7 @@ export class GameScene extends Phaser.Scene {
 
   private spawnBoss(): void {
     const def = BOSS_DEFS.find((candidate) => candidate.stageId === this.stageId) ?? BOSS_DEFS[0];
+    playSound('boss');
     const sprite = this.add.image(GAME_WIDTH / 2, PLAY_AREA_TOP + 64, 'boss_large')
       .setTint(def.colorHex)
       .setDepth(4);
@@ -416,12 +548,19 @@ export class GameScene extends Phaser.Scene {
       chargeVelocity: new Phaser.Math.Vector2(0, 0),
       chargeMs: 0,
     };
-    this.add.text(GAME_WIDTH / 2, 120, `${def.nameKo} 등장!`, {
+    const announce = this.add.text(GAME_WIDTH / 2, 120, `${def.nameKo} 등장!`, {
       fontSize: '20px',
       color: '#ffdb9a',
       backgroundColor: '#00000088',
       padding: { x: 8, y: 4 },
     }).setOrigin(0.5).setDepth(20).setAlpha(1);
+    this.tweens.add({
+      targets: announce,
+      y: 96,
+      alpha: 0,
+      duration: 1400,
+      onComplete: () => announce.destroy(),
+    });
   }
 
   private updateBoss(delta: number): void {
@@ -634,21 +773,113 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private findNearestEnemy(maxRange: number): EnemyState | undefined {
-    if (!this.player) {
-      return undefined;
-    }
-
-    let nearest: EnemyState | undefined;
+  private findNearestCombatTarget(maxRange: number): CombatTarget | undefined {
+    let nearest: CombatTarget | undefined;
     let nearestDistanceSq = maxRange * maxRange;
-    for (const enemy of this.enemies) {
-      const distanceSq = Phaser.Math.Distance.Squared(this.player.x, this.player.y, enemy.sprite.x, enemy.sprite.y);
+    for (const target of this.getCombatTargets()) {
+      const position = this.getTargetPosition(target);
+      const distanceSq = Phaser.Math.Distance.Squared(this.player!.x, this.player!.y, position.x, position.y);
       if (distanceSq <= nearestDistanceSq) {
-        nearest = enemy;
+        nearest = target;
         nearestDistanceSq = distanceSq;
       }
     }
     return nearest;
+  }
+
+  private findCombatTargetsInRadius(x: number, y: number, radius: number): CombatTarget[] {
+    return this.getCombatTargets()
+      .filter((target) => {
+        const position = this.getTargetPosition(target);
+        const targetRadius = target.kind === 'boss' ? target.boss.radius : target.enemy.radius;
+        return this.isCircleOverlap(x, y, radius, position.x, position.y, targetRadius);
+      })
+      .sort((a, b) => {
+        const aPosition = this.getTargetPosition(a);
+        const bPosition = this.getTargetPosition(b);
+        return Phaser.Math.Distance.Squared(x, y, aPosition.x, aPosition.y) - Phaser.Math.Distance.Squared(x, y, bPosition.x, bPosition.y);
+      });
+  }
+
+  private getCombatTargets(): CombatTarget[] {
+    const targets: CombatTarget[] = this.enemies.map((enemy) => ({ kind: 'enemy', enemy }));
+    if (this.boss) {
+      targets.push({ kind: 'boss', boss: this.boss });
+    }
+    return targets;
+  }
+
+  private getTargetPosition(target: CombatTarget): { x: number; y: number } {
+    const sprite = target.kind === 'boss' ? target.boss.sprite : target.enemy.sprite;
+    return { x: sprite.x, y: sprite.y };
+  }
+
+  private damageCombatTarget(target: CombatTarget, damage: number): void {
+    if (target.kind === 'boss') {
+      this.damageBoss(damage);
+      return;
+    }
+    this.damageEnemy(target.enemy, damage);
+  }
+
+  private isSameTarget(a: CombatTarget, b: CombatTarget): boolean {
+    if (a.kind !== b.kind) {
+      return false;
+    }
+    return a.kind === 'boss' ? a.boss.def.id === (b as { kind: 'boss'; boss: BossState }).boss.def.id : a.enemy.id === (b as { kind: 'enemy'; enemy: EnemyState }).enemy.id;
+  }
+
+  private rollMainDamage(attackStats: MainAttackStats): number {
+    let damage = Phaser.Math.FloatBetween(attackStats.minDamage, attackStats.maxDamage) * attackStats.damageMultiplier;
+    const critChance = Phaser.Math.Clamp(this.getEquippedOptionTotal('critChance'), 0, 0.55);
+    if (Math.random() < critChance) {
+      damage *= this.getMultiplierProduct('critDamageMultiplier');
+    }
+    return damage;
+  }
+
+  private explodeAt(x: number, y: number, radius: number, damage: number): void {
+    const explosion = this.add.circle(x, y, radius, 0xff7a3d, 0.28)
+      .setStrokeStyle(2, 0xffd08a)
+      .setDepth(8);
+    for (const target of this.findCombatTargetsInRadius(x, y, radius)) {
+      this.damageCombatTarget(target, damage);
+    }
+    this.tweens.add({
+      targets: explosion,
+      alpha: 0,
+      scaleX: 1.45,
+      scaleY: 1.45,
+      duration: 220,
+      onComplete: () => explosion.destroy(),
+    });
+  }
+
+  private drawLightningLine(fromX: number, fromY: number, toX: number, toY: number): void {
+    const line = this.add.line(0, 0, fromX, fromY, toX, toY, 0x82d8ff, 0.95)
+      .setOrigin(0)
+      .setLineWidth(3)
+      .setDepth(8);
+    this.tweens.add({
+      targets: line,
+      alpha: 0,
+      duration: 130,
+      onComplete: () => line.destroy(),
+    });
+  }
+
+  private addPoisonTickText(x: number, y: number): void {
+    const text = this.add.text(x, y - 18, 'POISON', {
+      fontSize: '9px',
+      color: '#74ff83',
+    }).setOrigin(0.5).setDepth(9);
+    this.tweens.add({
+      targets: text,
+      y: text.y - 10,
+      alpha: 0,
+      duration: 360,
+      onComplete: () => text.destroy(),
+    });
   }
 
   private damageEnemy(enemy: EnemyState, damage: number): void {
@@ -699,6 +930,7 @@ export class GameScene extends Phaser.Scene {
   private damagePlayer(rawDamage: number): void {
     const damageReduction = Phaser.Math.Clamp(this.getEquippedOptionTotal('damageReductionPercent'), 0, 0.6);
     this.playerHp = Math.max(0, this.playerHp - rawDamage * (1 - damageReduction));
+    playSound('hit');
     this.flashPlayer();
   }
 
@@ -718,6 +950,7 @@ export class GameScene extends Phaser.Scene {
       hazard.shape.destroy();
     }
     this.hazards = [];
+    playSound('clear');
     this.openRewardModal(generateRewardOptions({ stageId: this.stageId, context: 'bossReward' }), 'bossReward', 'Boss Reward');
   }
 
@@ -731,6 +964,13 @@ export class GameScene extends Phaser.Scene {
       id: `chest_${this.elapsedMs}_${Math.random()}`,
       sprite,
       radius: 16,
+    });
+    this.tweens.add({
+      targets: sprite,
+      y: sprite.y - 4,
+      duration: 450,
+      yoyo: true,
+      repeat: -1,
     });
   }
 
@@ -749,6 +989,7 @@ export class GameScene extends Phaser.Scene {
     chest.sprite.destroy();
     this.chests = this.chests.filter((candidate) => candidate.id !== chest.id);
     this.chestCountInRun += 1;
+    playSound('chest');
     if (this.chestCountInRun % 3 === 0) {
       this.openFocusSlotModal();
       return;
@@ -868,6 +1109,7 @@ export class GameScene extends Phaser.Scene {
     this.equippedCount = Object.keys(getSaveData().equipped).length;
     this.playerMaxHp = this.calculatePlayerMaxHp();
     this.playerHp = Math.min(this.playerMaxHp, this.playerHp + this.getEquippedOptionTotal('maxHpBonus'));
+    playSound('equip');
     this.refreshEquipmentPanel();
     if (shouldClearStage) {
       this.completeStage();
@@ -900,6 +1142,60 @@ export class GameScene extends Phaser.Scene {
     this.clearModal();
     this.rewardPhase = 'none';
     this.finishRun(true);
+  }
+
+  private showTutorialModal(): void {
+    this.rewardPhase = 'tutorial';
+    this.clearModal();
+
+    const container = this.add.container(0, 0).setDepth(100);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.68).setOrigin(0);
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 394, 0x16111e)
+      .setStrokeStyle(2, 0xf0c85a);
+    const title = this.add.text(GAME_WIDTH / 2, 134, 'How to Play', {
+      fontSize: '25px',
+      color: '#f8ddb0',
+    }).setOrigin(0.5);
+    const body = this.add.text(42, 176, [
+      '1. 이동만 직접 조작합니다.',
+      '   PC: WASD / 방향키',
+      '   모바일: 하단 영역 드래그',
+      '',
+      '2. 공격은 자동으로 발동합니다.',
+      '   무기를 바꾸면 공격 방식도 바뀝니다.',
+      '',
+      '3. 상자를 먹으면 장비 3택이 열립니다.',
+      '   3번째 상자는 원하는 부위 집중 파밍입니다.',
+      '',
+      '4. 보스 게이지가 차면 보스가 등장합니다.',
+      '   보스를 잡으면 다음 스테이지가 열립니다.',
+    ].join('\n'), {
+      fontSize: '13px',
+      color: '#ffffff',
+      lineSpacing: 5,
+      wordWrap: { width: 278 },
+    });
+    const startButton = this.add.rectangle(GAME_WIDTH / 2, 470, 154, 36, 0x26314a)
+      .setStrokeStyle(2, 0xf0c85a)
+      .setInteractive({ useHandCursor: true });
+    const startText = this.add.text(GAME_WIDTH / 2, 470, 'Start', {
+      fontSize: '16px',
+      color: '#ffffff',
+    }).setOrigin(0.5);
+
+    startButton.on('pointerdown', () => {
+      updateSaveData((save) => ({
+        ...save,
+        tutorial: {
+          ...save.tutorial,
+          stage1Seen: true,
+        },
+      }));
+      this.closeRewardModal();
+    });
+
+    container.add([backdrop, panel, title, body, startButton, startText]);
+    this.modal = container;
   }
 
   private showEquipmentInfo(slot: EquipmentSlot): void {
@@ -996,20 +1292,44 @@ export class GameScene extends Phaser.Scene {
   private getMainAttackStats(): MainAttackStats {
     const save = getSaveData();
     const weapon = save.equipped.weapon;
-    const minDamage = weapon?.rolledOptions.baseDamageMin ?? 5;
-    const maxDamage = weapon?.rolledOptions.baseDamageMax ?? 7;
+    const skillKind = weapon?.skillKind ?? 'bareFist';
+    const minDamage = weapon?.rolledOptions.baseDamageMin ?? 6;
+    const maxDamage = weapon?.rolledOptions.baseDamageMax ?? 9;
     const baseCooldown = weapon?.rolledOptions.cooldownMs ?? BARE_FIST_COOLDOWN_MS;
-    const range = BARE_FIST_RANGE * this.getMultiplierProduct('meleeRangeMultiplier');
+    const baseRange = this.getBaseRangeForSkill(skillKind);
+    const range = baseRange * this.getMultiplierProduct('meleeRangeMultiplier');
     const cooldown = baseCooldown * this.getMultiplierProduct('mainCooldownMultiplier');
     const damageMultiplier = this.getTaggedDamageMultiplier(weapon?.tags ?? ['mainAttack', 'melee', 'physical']);
+    const radius = (weapon?.rolledOptions.radiusPx ?? 44) * this.getMultiplierProduct('areaRadiusMultiplier');
+    const chainCount = Math.max(1, this.getEquippedOptionTotal('chainCount'));
+    const pierceCount = weapon?.rolledOptions.pierceCount ?? 2;
+    const projectileSpeed = weapon?.rolledOptions.projectileSpeed ?? 280;
 
     return {
       minDamage,
       maxDamage,
       cooldownMs: Phaser.Math.Clamp(cooldown, 160, 2500),
-      range: Phaser.Math.Clamp(range, 24, 140),
+      range: Phaser.Math.Clamp(range, 52, 260),
       damageMultiplier,
+      radius: Phaser.Math.Clamp(radius, 32, 120),
+      chainCount,
+      pierceCount,
+      projectileSpeed,
+      skillKind,
     };
+  }
+
+  private getBaseRangeForSkill(skillKind: SkillKind): number {
+    if (skillKind === 'fireProjectileExplosion' || skillKind === 'returningPoisonProjectile') {
+      return 170;
+    }
+    if (skillKind === 'lightningStrike') {
+      return 145;
+    }
+    if (skillKind === 'slashCone') {
+      return 92;
+    }
+    return BARE_FIST_RANGE;
   }
 
   private getTaggedDamageMultiplier(tags: readonly string[]): number {
@@ -1060,11 +1380,29 @@ export class GameScene extends Phaser.Scene {
 
   private getEquippedSummary(): string {
     const save = getSaveData();
-    const lines = EQUIPMENT_SLOTS.map((slot) => {
-      const item = save.equipped[slot];
-      return `${SLOT_LABELS[slot]}: ${item ? item.nameKo : 'Empty'}`;
-    });
-    return ['Current Equipment', ...lines].join('\n');
+    const short = (slot: EquipmentSlot) => save.equipped[slot]?.nameKo.slice(0, 6) ?? 'Empty';
+    return [
+      `W ${short('weapon')} / N ${short('necklace')} / H ${short('helmet')}`,
+      `G ${short('gloves')} / A ${short('armor')} / B ${short('belt')}`,
+      this.getSynergySummary(),
+    ].join('\n');
+  }
+
+  private getSynergySummary(): string {
+    const equipped = Object.values(getSaveData().equipped).filter((item): item is RolledEquipment => Boolean(item));
+    const tagCounts = new Map<string, number>();
+    for (const item of equipped) {
+      for (const tag of item.tags) {
+        tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+      }
+    }
+
+    const activeTags = [...tagCounts.entries()]
+      .filter(([tag, count]) => count >= 2 && tag !== 'mainAttack' && tag !== 'supportSkill' && tag !== 'defense')
+      .map(([tag]) => tag)
+      .slice(0, 4);
+
+    return `Synergy: ${activeTags.length > 0 ? activeTags.join(', ') : 'None yet'}`;
   }
 
   private formatEquipmentInfo(item: RolledEquipment): string {

@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, SLOT_LABELS, STAGE_COUNT } from '../constants';
-import { getSaveData, resetSaveData } from '../storage';
+import { getSaveData, resetSaveData, updateSaveData } from '../storage';
 import type { EquipmentSlot } from '../types';
 
 const EQUIPMENT_SLOTS = Object.keys(SLOT_LABELS) as EquipmentSlot[];
@@ -69,6 +69,25 @@ export class StageSelectScene extends Phaser.Scene {
     this.add.text(44, 556, `Volume: ${Math.round(save.settings.volume * 100)}%`, {
       fontSize: '15px',
       color: '#cfc4b2',
+    });
+
+    const volumeButton = this.add.rectangle(258, 564, 116, 30, 0x26314a)
+      .setStrokeStyle(1, 0xf0c85a)
+      .setInteractive({ useHandCursor: true });
+    this.add.text(258, 564, save.settings.volume > 0 ? 'Sound On' : 'Muted', {
+      fontSize: '13px',
+      color: '#ffffff',
+    }).setOrigin(0.5);
+
+    volumeButton.on('pointerdown', () => {
+      updateSaveData((current) => ({
+        ...current,
+        settings: {
+          ...current.settings,
+          volume: current.settings.volume > 0 ? 0 : 0.7,
+        },
+      }));
+      this.render();
     });
 
     const resetButton = this.add.rectangle(GAME_WIDTH / 2, 604, 144, 30, 0x43222a)
