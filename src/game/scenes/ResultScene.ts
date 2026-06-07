@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_HEIGHT, GAME_WIDTH, SLOT_LABELS } from '../constants';
+import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS } from '../constants';
 import { getSaveData } from '../storage';
 import { playSound } from '../systems/SoundSystem';
 import type { EquipmentSlot, RunResult } from '../types';
@@ -51,7 +51,7 @@ export class ResultScene extends Phaser.Scene {
       lineSpacing: 12,
     });
 
-    const equipmentSummary = EQUIPMENT_SLOTS.map((slot) => `${SLOT_LABELS[slot]}: ${save.equipped[slot]?.nameKo ?? 'Empty'}`);
+    const equipmentSummary = EQUIPMENT_SLOTS.map((slot) => `${SLOT_ICONS[slot]} ${SLOT_LABELS[slot]}: ${save.equipped[slot]?.nameKo ?? 'Empty'}`);
     this.add.text(54, 278, ['Current Equipment', ...equipmentSummary].join('\n'), {
       fontSize: '13px',
       color: '#cfc4b2',

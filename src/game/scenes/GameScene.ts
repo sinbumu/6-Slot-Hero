@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_HEIGHT, GAME_WIDTH, SLOT_LABELS } from '../constants';
+import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS, STAGE_COUNT } from '../constants';
 import { BOSS_DEFS, type BossDef, type BossPatternDef } from '../data/bosses';
 import { ENEMY_DEFS, type EnemyDef } from '../data/enemies';
 import { generateRewardOptions, getRarityLabel } from '../data/equipment';
@@ -130,6 +130,57 @@ const TAG_ICON_CONFIG: Record<Tag, { label: string; color: number; priority: num
   lifesteal: { label: '🩸 LIF', color: 0xff7aac, priority: 42 },
 };
 
+const STAGE_INTRO_STORIES: Record<number, { title: string; lines: string[] }> = {
+  1: {
+    title: 'Stage 1 · 잿빛 외곽',
+    lines: [
+      '균열 가장자리에는 오래된 뼈 무더기가 길을 막고 있습니다.',
+      '뼈 도살자는 쓰러진 영웅들의 장비를 제단에 걸어두고,',
+      '새로운 사냥감이 여섯 슬롯을 채우기도 전에 목을 노립니다.',
+    ],
+  },
+  2: {
+    title: 'Stage 2 · 잿불 소굴',
+    lines: [
+      '불씨가 꺼지지 않는 굴 안에서 잿불 오우거가 망치를 끌고 다닙니다.',
+      '그가 밟고 지난 땅은 붉게 갈라지고, 상자 속 금속은 열기로 뒤틀립니다.',
+      '뜨거운 숨결을 견디며 다음 장비를 찾아야 합니다.',
+    ],
+  },
+  3: {
+    title: 'Stage 3 · 폭풍 폐허',
+    lines: [
+      '무너진 첨탑 사이로 푸른 번개가 계속해서 되돌아옵니다.',
+      '폭풍 괴수는 그 전류를 심장처럼 품고 폐허 전체를 깨웁니다.',
+      '움직임을 멈추면 번개가 먼저 당신을 찾아낼 것입니다.',
+    ],
+  },
+  4: {
+    title: 'Stage 4 · 역병 구덩이',
+    lines: [
+      '초록 안개 아래에는 역병 거상이 천천히 숨을 쉽니다.',
+      '그가 흘린 독은 발밑에 고이고, 살아남은 장비마저 녹슬게 만듭니다.',
+      '오래 머물수록 전장은 당신 편이 아니게 됩니다.',
+    ],
+  },
+  5: {
+    title: 'Stage 5 · 육슬롯 균열',
+    lines: [
+      '균열의 중심에는 여섯 슬롯을 모두 삼키려는 망령이 기다립니다.',
+      '육슬롯 망령은 당신이 모은 힘을 비틀어 마지막 시험으로 되돌려 보냅니다.',
+      '여기서 승리해야 반복되는 사냥이 끝납니다.',
+    ],
+  },
+};
+
+const ENDING_STORY_LINES = [
+  '육슬롯 망령의 형체가 무너지자, 균열에 걸려 있던 장비들이 하나씩 빛을 잃습니다.',
+  '당신이 채운 여섯 슬롯은 더 이상 저주가 아니라, 닫히는 문을 붙드는 쐐기가 되었습니다.',
+  '마지막 상자의 뚜껑이 조용히 닫히고, 폐허 위로 첫 새벽빛이 들어옵니다.',
+  '',
+  'Game Clear',
+];
+
 export class GameScene extends Phaser.Scene {
   private stageId = 1;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -227,8 +278,8 @@ export class GameScene extends Phaser.Scene {
     this.createButton(GAME_WIDTH / 2, 614, 'End Test Run', () => {
       this.finishRun(false);
     });
-    if (this.stageId === 1 && !getSaveData().tutorial.introSeen) {
-      this.showIntroStoryModal();
+    if (!getSaveData().tutorial.seenStageIntros.includes(this.stageId)) {
+      this.showStageIntroModal();
     } else if (this.stageId === 1 && !getSaveData().tutorial.stage1Seen) {
       this.showTutorialModal();
     }
@@ -776,7 +827,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateBossGauge(delta: number): void {
-    if (this.boss || this.bossGauge >= 100) {
+    if (this.boss) {
+      return;
+    }
+    if (this.bossGauge >= 100) {
+      this.spawnBoss();
       return;
     }
 
@@ -1496,7 +1551,7 @@ export class GameScene extends Phaser.Scene {
       const button = this.add.rectangle(x, y, 116, 38, 0x241b2d)
         .setStrokeStyle(2, 0xf0c85a)
         .setInteractive({ useHandCursor: true });
-      const label = this.add.text(x, y, SLOT_LABELS[slot], {
+      const label = this.add.text(x, y, this.getSlotLabel(slot), {
         fontSize: '14px',
         color: '#ffffff',
       }).setOrigin(0.5);
@@ -1504,7 +1559,7 @@ export class GameScene extends Phaser.Scene {
         this.openRewardModal(
           generateRewardOptions({ stageId: this.stageId, context: 'focusedChest', focusSlot: slot }),
           'focusReward',
-          `${SLOT_LABELS[slot]} Focus`,
+          `${this.getSlotLabel(slot)} Focus`,
         );
       });
       container.add([button, label]);
@@ -1557,31 +1612,33 @@ export class GameScene extends Phaser.Scene {
     options.forEach((item, index) => {
       const currentItem = getSaveData().equipped[item.slot];
       const isSameItem = currentItem?.id === item.id;
-      const y = 154 + index * 120;
-      const card = this.add.rectangle(GAME_WIDTH / 2, y, 306, 114, isSameItem ? 0x2e2a19 : 0x241b2d)
+      const y = 148 + index * 132;
+      const card = this.add.rectangle(GAME_WIDTH / 2, y, 306, 124, isSameItem ? 0x2e2a19 : 0x241b2d)
         .setStrokeStyle(isSameItem ? 3 : 2, isSameItem ? 0x9dff7a : this.getRarityColor(item.rarity))
         .setInteractive({ useHandCursor: true });
-      const synergyBadge = this.hasCoreSynergy(item)
-        ? this.createSynergyBadge(262, y - 43)
-        : [];
-      const name = this.add.text(30, y - 50, this.truncateText(`${this.getEquipmentDisplayName(item)} [${getRarityLabel(item.rarity)}]`, 31), {
+      const synergyBadge = this.getCoreSynergyKinds(item)
+        .flatMap((kind, badgeIndex) => this.createSynergyBadge(kind, 268, y - 50 + badgeIndex * 18));
+      const name = this.add.text(30, y - 55, this.truncateText(`${this.getEquipmentDisplayName(item)} [${getRarityLabel(item.rarity)}]`, 31), {
         fontSize: '13px',
         color: '#ffffff',
       });
-      this.addTagIcons(container, item, 30, y - 28);
-      const replaceText = this.add.text(30, y - 10, this.truncateText(this.getReplacementText(item), 41), {
+      this.addTagIcons(container, item, 30, y - 34);
+      const replaceText = this.add.text(30, y - 17, this.truncateText(this.getReplacementText(item), 41), {
         fontSize: '10px',
-        color: isSameItem ? '#9dff7a' : '#ffdb9a',
+        color: this.getReplacementTextColor(item),
       });
-      const desc = this.add.text(30, y + 7, this.truncateText(`${SLOT_LABELS[item.slot]} · ${item.playerDescription}`, 46), {
-        fontSize: '10px',
+      const desc = this.add.text(30, y + 1, `${this.getSlotLabel(item.slot)} · ${item.playerDescription}`, {
+        fontSize: '9px',
         color: '#d7cdbd',
+        wordWrap: { width: 284 },
+        maxLines: 2,
+        lineSpacing: 1,
       });
-      const optionsText = this.add.text(30, y + 26, this.truncateText(this.formatOptions(item, 3), 48), {
+      const optionsText = this.add.text(30, y + 35, this.truncateText(this.formatOptions(item, 3), 48), {
         fontSize: '10px',
         color: '#f0d8aa',
       });
-      const hint = this.add.text(30, y + 43, isSameItem ? 'Tap: upgrade existing gear' : 'Tap: equip and replace slot', {
+      const hint = this.add.text(30, y + 52, isSameItem ? 'Tap: upgrade existing gear' : 'Tap: equip and replace slot', {
         fontSize: '9px',
         color: '#9a8a78',
       });
@@ -1589,10 +1646,10 @@ export class GameScene extends Phaser.Scene {
       container.add([card, ...synergyBadge, name, replaceText, desc, optionsText, hint]);
     });
 
-    const skip = this.add.rectangle(GAME_WIDTH / 2, 538, 278, 34, 0x302631)
+    const skip = this.add.rectangle(GAME_WIDTH / 2, 558, 278, 34, 0x302631)
       .setStrokeStyle(1, 0x9a8a78)
       .setInteractive({ useHandCursor: true });
-    const skipText = this.add.text(GAME_WIDTH / 2, 538, this.getSkipRewardLabel(phase), {
+    const skipText = this.add.text(GAME_WIDTH / 2, 558, this.getSkipRewardLabel(phase), {
       fontSize: '10px',
       color: '#ffffff',
     }).setOrigin(0.5);
@@ -1679,29 +1736,27 @@ export class GameScene extends Phaser.Scene {
     });
     this.clearModal();
     this.rewardPhase = 'none';
+    if (this.stageId === STAGE_COUNT && !getSaveData().tutorial.endingSeen) {
+      this.showEndingStoryModal();
+      return;
+    }
     this.finishRun(true);
   }
 
-  private showIntroStoryModal(): void {
+  private showStageIntroModal(): void {
     this.rewardPhase = 'tutorial';
     this.clearModal();
+    const story = STAGE_INTRO_STORIES[this.stageId] ?? STAGE_INTRO_STORIES[1];
 
     const container = this.add.container(0, 0).setDepth(100);
     const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72).setOrigin(0);
     const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 360, 0x16111e)
       .setStrokeStyle(2, 0xf0c85a);
-    const title = this.add.text(GAME_WIDTH / 2, 158, 'Prologue', {
-      fontSize: '25px',
+    const title = this.add.text(GAME_WIDTH / 2, 158, story.title, {
+      fontSize: '23px',
       color: '#f8ddb0',
     }).setOrigin(0.5);
-    const body = this.add.text(42, 204, [
-      '폐허의 균열에서 여섯 개의 장비 슬롯이 깨어났습니다.',
-      '',
-      '당신은 남은 힘을 장비에 의존해 짧은 전투를 반복하고,',
-      '상자에서 얻은 선택으로 점점 강해져야 합니다.',
-      '',
-      'Stage 5의 망령을 쓰러뜨리면 균열은 닫힙니다.',
-    ].join('\n'), {
+    const body = this.add.text(42, 204, story.lines.join('\n\n'), {
       fontSize: '13px',
       color: '#ffffff',
       lineSpacing: 7,
@@ -1720,14 +1775,59 @@ export class GameScene extends Phaser.Scene {
         ...save,
         tutorial: {
           ...save.tutorial,
-          introSeen: true,
+          introSeen: this.stageId === 1 ? true : save.tutorial.introSeen,
+          seenStageIntros: [...new Set([...save.tutorial.seenStageIntros, this.stageId])],
         },
       }));
-      if (!getSaveData().tutorial.stage1Seen) {
+      if (this.stageId === 1 && !getSaveData().tutorial.stage1Seen) {
         this.showTutorialModal();
         return;
       }
       this.closeRewardModal();
+    });
+
+    container.add([backdrop, panel, title, body, nextButton, nextText]);
+    this.modal = container;
+  }
+
+  private showEndingStoryModal(): void {
+    this.rewardPhase = 'tutorial';
+    this.clearModal();
+
+    const container = this.add.container(0, 0).setDepth(100);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.78).setOrigin(0);
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 318, 390, 0x16111e)
+      .setStrokeStyle(2, 0xf0c85a);
+    const title = this.add.text(GAME_WIDTH / 2, 134, 'Ending · 균열의 새벽', {
+      fontSize: '23px',
+      color: '#f8ddb0',
+    }).setOrigin(0.5);
+    const body = this.add.text(42, 178, ENDING_STORY_LINES.join('\n\n'), {
+      fontSize: '13px',
+      color: '#ffffff',
+      lineSpacing: 7,
+      wordWrap: { width: 278 },
+      align: 'center',
+    });
+    const nextButton = this.add.rectangle(GAME_WIDTH / 2, 486, 178, 36, 0x26314a)
+      .setStrokeStyle(2, 0xf0c85a)
+      .setInteractive({ useHandCursor: true });
+    const nextText = this.add.text(GAME_WIDTH / 2, 486, 'Back to Title', {
+      fontSize: '16px',
+      color: '#ffffff',
+    }).setOrigin(0.5);
+
+    nextButton.on('pointerdown', () => {
+      updateSaveData((save) => ({
+        ...save,
+        tutorial: {
+          ...save.tutorial,
+          endingSeen: true,
+        },
+      }));
+      this.clearModal();
+      this.rewardPhase = 'none';
+      this.scene.start('TitleScene');
     });
 
     container.add([backdrop, panel, title, body, nextButton, nextText]);
@@ -2122,38 +2222,41 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private createSynergyBadge(x: number, y: number): Phaser.GameObjects.GameObject[] {
-    const bg = this.add.rectangle(x, y, 76, 16, 0x3b2d13, 0.92)
+  private createSynergyBadge(kind: 'weapon' | 'necklace', x: number, y: number): Phaser.GameObjects.GameObject[] {
+    const bg = this.add.rectangle(x, y, 64, 16, 0x3b2d13, 0.92)
       .setOrigin(0.5)
       .setStrokeStyle(1, 0xffd36a, 0.95);
-    const label = this.add.text(x, y, '✨ SYNERGY', {
+    const label = this.add.text(x, y, kind === 'weapon' ? '⚔ SYN' : '📿 SYN', {
       fontSize: '8px',
       color: '#ffe7a3',
     }).setOrigin(0.5);
     return [bg, label];
   }
 
-  private hasCoreSynergy(item: RolledEquipment): boolean {
+  private getCoreSynergyKinds(item: RolledEquipment): Array<'weapon' | 'necklace'> {
     const save = getSaveData();
-    const coreItems = [save.equipped.weapon, save.equipped.necklace].filter((candidate): candidate is RolledEquipment => Boolean(candidate));
-    if (coreItems.length === 0) {
-      return false;
-    }
-
     const ignoredTags = new Set<Tag>(['mainAttack', 'supportSkill', 'defense']);
     const itemTags = new Set(item.tags.filter((tag) => !ignoredTags.has(tag)));
-    return coreItems.some((coreItem) => {
-      if (coreItem.instanceId === item.instanceId) {
+    const hasSynergyWith = (coreItem: RolledEquipment | undefined) => {
+      if (!coreItem || coreItem.instanceId === item.instanceId) {
         return false;
       }
       return coreItem.tags.some((tag) => itemTags.has(tag));
-    });
+    };
+    return [
+      ...(hasSynergyWith(save.equipped.weapon) ? ['weapon' as const] : []),
+      ...(hasSynergyWith(save.equipped.necklace) ? ['necklace' as const] : []),
+    ];
   }
 
   private getDisplayTags(item: RolledEquipment): Tag[] {
     return [...item.tags]
       .sort((a, b) => TAG_ICON_CONFIG[a].priority - TAG_ICON_CONFIG[b].priority)
       .slice(0, 5);
+  }
+
+  private getSlotLabel(slot: EquipmentSlot): string {
+    return `${SLOT_ICONS[slot]} ${SLOT_LABELS[slot]}`;
   }
 
   private getReplacementText(item: RolledEquipment): string {
@@ -2168,6 +2271,17 @@ export class GameScene extends Phaser.Scene {
         : `Same gear · upgrade ${this.getEquipmentDisplayName(currentItem)} → +${nextLevel}`;
     }
     return `Replaces ${this.getEquipmentDisplayName(currentItem)}`;
+  }
+
+  private getReplacementTextColor(item: RolledEquipment): string {
+    const currentItem = getSaveData().equipped[item.slot];
+    if (!currentItem) {
+      return '#ffdb9a';
+    }
+    if (currentItem.id === item.id) {
+      return '#9dff7a';
+    }
+    return '#ff8585';
   }
 
   private getSkipRewardLabel(phase: 'normalReward' | 'focusReward' | 'bossReward'): string {

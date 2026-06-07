@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_HEIGHT, GAME_WIDTH, SLOT_LABELS, STAGE_COUNT } from '../constants';
+import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS, STAGE_COUNT } from '../constants';
 import { getSaveData, resetSaveData, updateSaveData } from '../storage';
 import type { EquipmentSlot } from '../types';
 
@@ -57,7 +57,7 @@ export class StageSelectScene extends Phaser.Scene {
 
     const equippedLines = EQUIPMENT_SLOTS.map((slot) => {
       const item = save.equipped[slot];
-      return `${SLOT_LABELS[slot]}: ${item?.nameKo ?? 'Empty'}`;
+      return `${SLOT_ICONS[slot]} ${SLOT_LABELS[slot]}: ${item?.nameKo ?? 'Empty'}`;
     });
 
     this.add.text(44, 418, equippedLines.join('\n'), {

@@ -12,7 +12,14 @@ export function getDefaultSaveData(): SaveData {
     clearedStages: [],
     equipped: {},
     settings: { volume: 0.7 },
-    tutorial: { introSeen: false, stage1Seen: false, firstRewardSeen: false, firstEquipSeen: false },
+    tutorial: {
+      introSeen: false,
+      stage1Seen: false,
+      firstRewardSeen: false,
+      firstEquipSeen: false,
+      seenStageIntros: [],
+      endingSeen: false,
+    },
     stats: { totalRuns: 0, totalKills: 0, bestStage: 1 },
   };
 }
@@ -84,6 +91,8 @@ function normalizeSaveData(input: Partial<SaveData>): SaveData {
       stage1Seen: typeof input.tutorial?.stage1Seen === 'boolean' ? input.tutorial.stage1Seen : false,
       firstRewardSeen: typeof input.tutorial?.firstRewardSeen === 'boolean' ? input.tutorial.firstRewardSeen : false,
       firstEquipSeen: typeof input.tutorial?.firstEquipSeen === 'boolean' ? input.tutorial.firstEquipSeen : false,
+      seenStageIntros: normalizeSeenStageIntros(input.tutorial?.seenStageIntros, input.tutorial?.introSeen),
+      endingSeen: typeof input.tutorial?.endingSeen === 'boolean' ? input.tutorial.endingSeen : false,
     },
     stats: {
       totalRuns: clampNonNegativeInteger(input.stats?.totalRuns ?? 0),
@@ -95,6 +104,14 @@ function normalizeSaveData(input: Partial<SaveData>): SaveData {
 
 function clampStage(value: number): number {
   return Math.max(1, Math.min(STAGE_COUNT, Math.floor(value)));
+}
+
+function normalizeSeenStageIntros(value: unknown, legacyIntroSeen: unknown): number[] {
+  const stages = Array.isArray(value) ? value.filter(isStageNumber) : [];
+  if (legacyIntroSeen === true && !stages.includes(1)) {
+    stages.push(1);
+  }
+  return [...new Set(stages)].sort((a, b) => a - b);
 }
 
 function clamp01(value: number): number {

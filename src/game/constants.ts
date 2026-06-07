@@ -11,3 +11,12 @@ export const SLOT_LABELS = {
   armor: 'Armor',
   belt: 'Belt',
 } as const;
+
+export const SLOT_ICONS = {
+  weapon: '⚔',
+  necklace: '📿',
+  helmet: '⛑',
+  gloves: '🧤',
+  armor: '🛡',
+  belt: '🧷',
+} as const;

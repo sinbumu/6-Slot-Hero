@@ -110,6 +110,8 @@ export interface SaveData {
     stage1Seen: boolean;
     firstRewardSeen: boolean;
     firstEquipSeen: boolean;
+    seenStageIntros: number[];
+    endingSeen: boolean;
   };
   stats: {
     totalRuns: number;
