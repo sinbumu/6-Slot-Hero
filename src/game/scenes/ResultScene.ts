@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS, s, sf } from '../constants';
 import { getSaveData } from '../storage';
+import { KeyboardMenuNavigator, type KeyboardMenuItem } from '../systems/KeyboardMenuNavigator';
 import { playBgm, playSound } from '../systems/SoundSystem';
 import type { EquipmentSlot, RunResult } from '../types';
 
@@ -14,6 +15,8 @@ export class ResultScene extends Phaser.Scene {
     kills: 0,
     equippedCount: 0,
   };
+
+  private readonly keyboardMenu = new KeyboardMenuNavigator(this);
 
   constructor() {
     super('ResultScene');
@@ -59,17 +62,24 @@ export class ResultScene extends Phaser.Scene {
       lineSpacing: s(7),
     });
 
-    this.createButton(GAME_WIDTH / 2, s(526), 'Retry Stage', () => {
+    const menuItems: KeyboardMenuItem[] = [];
+    menuItems.push(this.createButton(GAME_WIDTH / 2, s(526), 'Retry Stage', () => {
       playSound('ui_select', this);
       this.scene.start('GameScene', { stageId: this.result.stageId });
-    });
-    this.createButton(GAME_WIDTH / 2, s(574), 'Stage Select', () => {
+    }));
+    menuItems.push(this.createButton(GAME_WIDTH / 2, s(574), 'Stage Select', () => {
       playSound('ui_click', this);
       this.scene.start('StageSelectScene');
-    });
+    }));
+    this.keyboardMenu.bind(menuItems, 1);
+
+    this.add.text(GAME_WIDTH / 2, s(618), 'W/S · Enter · Click', {
+      fontSize: sf(11),
+      color: '#7a7468',
+    }).setOrigin(0.5);
   }
 
-  private createButton(x: number, y: number, label: string, onClick: () => void): void {
+  private createButton(x: number, y: number, label: string, onClick: () => void): KeyboardMenuItem {
     const button = this.add.rectangle(x, y, s(176), s(34), 0x26314a)
       .setStrokeStyle(s(2), 0xf0c85a)
       .setInteractive({ useHandCursor: true });
@@ -78,5 +88,11 @@ export class ResultScene extends Phaser.Scene {
       color: '#ffffff',
     }).setOrigin(0.5);
     button.on('pointerdown', onClick);
+    return {
+      target: button,
+      normalStrokeWidth: s(2),
+      normalStrokeColor: 0xf0c85a,
+      onSelect: onClick,
+    };
   }
 }

@@ -6,6 +6,7 @@ import { generateRewardOptions, getRarityLabel } from '../data/equipment';
 import { getSaveData, updateSaveData } from '../storage';
 import { playBgm, playSound, type BgmCue } from '../systems/SoundSystem';
 import { FloatingJoystick } from '../systems/FloatingJoystick';
+import { KeyboardMenuNavigator, type KeyboardMenuItem } from '../systems/KeyboardMenuNavigator';
 import type { EquipmentSlot, RolledEquipment, RunResult, SkillKind, Tag } from '../types';
 
 interface GameSceneData {
@@ -244,6 +245,7 @@ export class GameScene extends Phaser.Scene {
   private isRunOver = false;
   private rewardPhase: RewardPhase = 'none';
   private modal?: Phaser.GameObjects.Container;
+  private readonly keyboardMenu = new KeyboardMenuNavigator(this);
   private equipmentInfoBlockedUntilMs = 0;
 
   constructor() {
@@ -1615,6 +1617,7 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5);
     container.add([backdrop, panel, title, subtitle]);
 
+    const menuItems: KeyboardMenuItem[] = [];
     EQUIPMENT_SLOTS.forEach((slot, index) => {
       const col = index % 2;
       const row = Math.floor(index / 2);
@@ -1627,12 +1630,19 @@ export class GameScene extends Phaser.Scene {
         fontSize: sf(14),
         color: '#ffffff',
       }).setOrigin(0.5);
-      button.on('pointerdown', () => {
+      const selectSlot = (): void => {
         this.openRewardModal(
           generateRewardOptions({ stageId: this.stageId, context: 'focusedChest', focusSlot: slot }),
           'focusReward',
           `${this.getSlotLabel(slot)} Focus`,
         );
+      };
+      button.on('pointerdown', selectSlot);
+      menuItems.push({
+        target: button,
+        normalStrokeWidth: s(2),
+        normalStrokeColor: 0xf0c85a,
+        onSelect: selectSlot,
       });
       container.add([button, label]);
     });
@@ -1644,9 +1654,21 @@ export class GameScene extends Phaser.Scene {
       fontSize: sf(12),
       color: '#ffffff',
     }).setOrigin(0.5);
-    skip.on('pointerdown', () => this.skipReward());
+    const skipReward = (): void => this.skipReward();
+    skip.on('pointerdown', skipReward);
+    menuItems.push({
+      target: skip,
+      normalStrokeWidth: s(1),
+      normalStrokeColor: 0x9a8a78,
+      onSelect: skipReward,
+    });
     container.add([skip, skipText]);
+    container.add(this.add.text(GAME_WIDTH / 2, s(458), 'W/S/A/D · Enter · Click', {
+      fontSize: sf(9),
+      color: '#7a7468',
+    }).setOrigin(0.5));
     this.modal = container;
+    this.bindModalMenu(menuItems, 2);
   }
 
   private openRewardModal(options: RolledEquipment[], phase: 'normalReward' | 'focusReward' | 'bossReward', titleText = 'Reward Select'): void {
@@ -1683,6 +1705,7 @@ export class GameScene extends Phaser.Scene {
       : undefined;
     container.add(hint ? [backdrop, panel, title, hint] : [backdrop, panel, title]);
 
+    const menuItems: KeyboardMenuItem[] = [];
     options.forEach((item, index) => {
       const currentItem = getSaveData().equipped[item.slot];
       const isSameItem = currentItem?.id === item.id;
@@ -1712,12 +1735,19 @@ export class GameScene extends Phaser.Scene {
         fontSize: sf(10),
         color: '#f0d8aa',
       });
-      const hint = this.add.text(s(30), y + s(52), isSameItem ? 'Tap: upgrade existing gear' : 'Tap: equip and replace slot', {
+      const cardHint = this.add.text(s(30), y + s(52), isSameItem ? 'Tap: upgrade existing gear' : 'Tap: equip and replace slot', {
         fontSize: sf(9),
         color: '#9a8a78',
       });
-      card.on('pointerdown', () => this.equipReward(item));
-      container.add([card, ...synergyBadge, name, replaceText, desc, optionsText, hint]);
+      const selectItem = (): void => this.equipReward(item);
+      card.on('pointerdown', selectItem);
+      menuItems.push({
+        target: card,
+        normalStrokeWidth: isSameItem ? s(3) : s(2),
+        normalStrokeColor: isSameItem ? 0x9dff7a : this.getRarityColor(item.rarity),
+        onSelect: selectItem,
+      });
+      container.add([card, ...synergyBadge, name, replaceText, desc, optionsText, cardHint]);
     });
 
     const skip = this.add.rectangle(GAME_WIDTH / 2, s(558), s(278), s(34), 0x302631)
@@ -1727,9 +1757,21 @@ export class GameScene extends Phaser.Scene {
       fontSize: sf(10),
       color: '#ffffff',
     }).setOrigin(0.5);
-    skip.on('pointerdown', () => this.skipReward());
+    const skipReward = (): void => this.skipReward();
+    skip.on('pointerdown', skipReward);
+    menuItems.push({
+      target: skip,
+      normalStrokeWidth: s(1),
+      normalStrokeColor: 0x9a8a78,
+      onSelect: skipReward,
+    });
     container.add([skip, skipText]);
+    container.add(this.add.text(GAME_WIDTH / 2, s(592), 'W/S · Enter · Click', {
+      fontSize: sf(9),
+      color: '#7a7468',
+    }).setOrigin(0.5));
     this.modal = container;
+    this.bindModalMenu(menuItems, 1);
   }
 
   private equipReward(item: RolledEquipment): void {
@@ -1847,7 +1889,7 @@ export class GameScene extends Phaser.Scene {
       color: '#ffffff',
     }).setOrigin(0.5);
 
-    nextButton.on('pointerdown', () => {
+    const continueIntro = (): void => {
       updateSaveData((save) => ({
         ...save,
         tutorial: {
@@ -1861,7 +1903,9 @@ export class GameScene extends Phaser.Scene {
         return;
       }
       this.closeRewardModal();
-    });
+    };
+    nextButton.on('pointerdown', continueIntro);
+    this.bindModalSingleButton(nextButton, s(2), 0xf0c85a, continueIntro);
 
     container.add([backdrop, panel, title, body, nextButton, nextText]);
     this.modal = container;
@@ -1896,7 +1940,7 @@ export class GameScene extends Phaser.Scene {
       color: '#ffffff',
     }).setOrigin(0.5);
 
-    nextButton.on('pointerdown', () => {
+    const goToTitle = (): void => {
       updateSaveData((save) => ({
         ...save,
         tutorial: {
@@ -1908,7 +1952,9 @@ export class GameScene extends Phaser.Scene {
       this.rewardPhase = 'none';
       playSound('ui_click', this);
       this.scene.start('TitleScene');
-    });
+    };
+    nextButton.on('pointerdown', goToTitle);
+    this.bindModalSingleButton(nextButton, s(2), 0xf0c85a, goToTitle);
 
     container.add([backdrop, panel, title, body, nextButton, nextText]);
     this.modal = container;
@@ -1937,6 +1983,7 @@ export class GameScene extends Phaser.Scene {
       '   무기를 바꾸면 공격 방식도 바뀝니다.',
       '',
       '3. 상자를 먹으면 장비 3택이 열립니다.',
+      '   PC: W/S 선택 · Enter/Space 확인',
       '   3번째 상자는 원하는 부위 집중 파밍입니다.',
       '',
       '4. 보스 게이지가 차면 보스가 등장합니다.',
@@ -1955,7 +2002,7 @@ export class GameScene extends Phaser.Scene {
       color: '#ffffff',
     }).setOrigin(0.5);
 
-    startButton.on('pointerdown', () => {
+    const startRun = (): void => {
       updateSaveData((save) => ({
         ...save,
         tutorial: {
@@ -1964,7 +2011,9 @@ export class GameScene extends Phaser.Scene {
         },
       }));
       this.closeRewardModal();
-    });
+    };
+    startButton.on('pointerdown', startRun);
+    this.bindModalSingleButton(startButton, s(2), 0xf0c85a, startRun);
 
     container.add([backdrop, panel, title, body, startButton, startText]);
     this.modal = container;
@@ -2006,7 +2055,9 @@ export class GameScene extends Phaser.Scene {
       color: '#ffffff',
     }).setOrigin(0.5);
 
-    okButton.on('pointerdown', () => this.closeRewardModal());
+    const closeFirstEquip = (): void => this.closeRewardModal();
+    okButton.on('pointerdown', closeFirstEquip);
+    this.bindModalSingleButton(okButton, s(2), 0xf0c85a, closeFirstEquip);
     container.add([backdrop, panel, title, body, okButton, okText]);
     this.modal = container;
   }
@@ -2039,12 +2090,33 @@ export class GameScene extends Phaser.Scene {
       fontSize: sf(14),
       color: '#ffffff',
     }).setOrigin(0.5);
-    close.on('pointerdown', () => this.closeRewardModal());
+    const closeInfo = (): void => this.closeRewardModal();
+    close.on('pointerdown', closeInfo);
+    this.bindModalSingleButton(close, s(1), 0xf0c85a, closeInfo);
     container.add([backdrop, panel, title, body, close, closeText]);
     this.modal = container;
   }
 
+  private bindModalMenu(items: KeyboardMenuItem[], columns = 1): void {
+    this.keyboardMenu.bind(items, columns);
+  }
+
+  private bindModalSingleButton(
+    button: Phaser.GameObjects.Rectangle,
+    normalStrokeWidth: number,
+    normalStrokeColor: number,
+    onSelect: () => void,
+  ): void {
+    this.bindModalMenu([{
+      target: button,
+      normalStrokeWidth,
+      normalStrokeColor,
+      onSelect,
+    }], 1);
+  }
+
   private clearModal(): void {
+    this.keyboardMenu.unbind();
     this.modal?.destroy(true);
     this.modal = undefined;
   }

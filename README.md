@@ -9,10 +9,11 @@
 
 ## Controls
 
-- PC: WASD / Arrow Keys
+- PC movement: WASD / Arrow Keys
+- PC menus & modals: W/S (or Arrow Up/Down) to focus · Enter / Space to confirm · A/D in 2-column grids
 - Mobile: Floating joystick (bottom-left) · Tap gear slots (bottom-right) for details
 - Equipment: Tap an equipment slot to view item details
-- Rewards: Tap a card to equip it, or choose `선택 안 함`
+- Rewards: Focus a card with W/S, confirm with Enter/Space, or click · `선택 안 함` to skip
 
 ## Core Systems
 

@@ -1,12 +1,15 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS, STAGE_COUNT, s, sf } from '../constants';
 import { getSaveData, resetSaveData, updateSaveData } from '../storage';
+import { KeyboardMenuNavigator, type KeyboardMenuItem } from '../systems/KeyboardMenuNavigator';
 import { applySceneVolume, playBgm, playSound } from '../systems/SoundSystem';
 import type { EquipmentSlot } from '../types';
 
 const EQUIPMENT_SLOTS = Object.keys(SLOT_LABELS) as EquipmentSlot[];
 
 export class StageSelectScene extends Phaser.Scene {
+  private readonly keyboardMenu = new KeyboardMenuNavigator(this);
+
   constructor() {
     super('StageSelectScene');
   }
@@ -17,9 +20,11 @@ export class StageSelectScene extends Phaser.Scene {
   }
 
   private render(): void {
+    this.keyboardMenu.unbind();
     this.children.removeAll();
 
     const save = getSaveData();
+    const menuItems: KeyboardMenuItem[] = [];
     this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x111018).setOrigin(0);
     this.add.text(GAME_WIDTH / 2, s(42), 'Select Stage', {
       fontSize: sf(28),
@@ -41,9 +46,16 @@ export class StageSelectScene extends Phaser.Scene {
       }).setOrigin(0.5);
 
       if (isOpen) {
-        button.on('pointerdown', () => {
+        const startStage = (): void => {
           playSound('ui_select', this);
           this.scene.start('GameScene', { stageId });
+        };
+        button.on('pointerdown', startStage);
+        menuItems.push({
+          target: button,
+          normalStrokeWidth: s(2),
+          normalStrokeColor: 0xf0c85a,
+          onSelect: startStage,
         });
       }
     }
@@ -77,7 +89,15 @@ export class StageSelectScene extends Phaser.Scene {
       color: '#ffffff',
     }).setOrigin(0.5);
 
-    volumeButton.on('pointerdown', () => {
+    const resetButton = this.add.rectangle(GAME_WIDTH / 2, s(604), s(144), s(30), 0x43222a)
+      .setStrokeStyle(s(1), 0xff8585)
+      .setInteractive({ useHandCursor: true });
+    this.add.text(GAME_WIDTH / 2, s(604), 'Reset Data', {
+      fontSize: sf(14),
+      color: '#ffd6d6',
+    }).setOrigin(0.5);
+
+    const toggleVolume = (): void => {
       updateSaveData((current) => ({
         ...current,
         settings: {
@@ -90,23 +110,37 @@ export class StageSelectScene extends Phaser.Scene {
         playBgm(this, 'stage_select');
       }
       this.render();
-    });
-
-    const resetButton = this.add.rectangle(GAME_WIDTH / 2, s(604), s(144), s(30), 0x43222a)
-      .setStrokeStyle(s(1), 0xff8585)
-      .setInteractive({ useHandCursor: true });
-    this.add.text(GAME_WIDTH / 2, s(604), 'Reset Data', {
-      fontSize: sf(14),
-      color: '#ffd6d6',
-    }).setOrigin(0.5);
-
-    resetButton.on('pointerdown', () => {
+    };
+    const resetData = (): void => {
       playSound('ui_click', this);
       if (window.confirm('Reset all save data?')) {
         resetSaveData();
         applySceneVolume(this);
         this.render();
       }
-    });
+    };
+
+    volumeButton.on('pointerdown', toggleVolume);
+    resetButton.on('pointerdown', resetData);
+    menuItems.push(
+      {
+        target: volumeButton,
+        normalStrokeWidth: s(1),
+        normalStrokeColor: 0xf0c85a,
+        onSelect: toggleVolume,
+      },
+      {
+        target: resetButton,
+        normalStrokeWidth: s(1),
+        normalStrokeColor: 0xff8585,
+        onSelect: resetData,
+      },
+    );
+    this.keyboardMenu.bind(menuItems, 1);
+
+    this.add.text(GAME_WIDTH / 2, s(638), 'W/S · Enter · Click', {
+      fontSize: sf(11),
+      color: '#7a7468',
+    }).setOrigin(0.5);
   }
 }
