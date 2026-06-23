@@ -33,9 +33,10 @@
 ## Mobile Test
 
 - [ ] Game fits a 1080x1920 (9:16) portrait viewport via Scale.FIT
-- [ ] Dragging in the lower combat/control/equipment area moves the player
-- [ ] Equipment slot short tap opens item info
-- [ ] Dragging over equipment slots does not accidentally open item info
+- [ ] Floating joystick in the bottom-left control zone moves the player
+- [ ] Equipment slot tap opens item info without triggering movement
+- [ ] Slot labels show icon, abbrev, and truncated gear name without clipping
+- [ ] Joystick ghost hint visible before first touch (touch devices)
 - [ ] Reward cards can be tapped
 - [ ] Focused Loot slot buttons can be tapped
 - [ ] Bottom browser navigation does not block core controls

@@ -10,7 +10,7 @@
 ## Controls
 
 - PC: WASD / Arrow Keys
-- Mobile: Drag in the lower combat/control/equipment area
+- Mobile: Floating joystick (bottom-left) · Tap gear slots (bottom-right) for details
 - Equipment: Tap an equipment slot to view item details
 - Rewards: Tap a card to equip it, or choose `선택 안 함`
 

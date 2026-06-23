@@ -5,6 +5,7 @@ import { ENEMY_DEFS, type EnemyDef } from '../data/enemies';
 import { generateRewardOptions, getRarityLabel } from '../data/equipment';
 import { getSaveData, updateSaveData } from '../storage';
 import { playBgm, playSound, type BgmCue } from '../systems/SoundSystem';
+import { FloatingJoystick } from '../systems/FloatingJoystick';
 import type { EquipmentSlot, RolledEquipment, RunResult, SkillKind, Tag } from '../types';
 
 interface GameSceneData {
@@ -93,8 +94,28 @@ type CombatTarget =
 type RewardPhase = 'none' | 'normalReward' | 'focusSlotSelect' | 'focusReward' | 'bossReward' | 'infoPopup' | 'tutorial';
 
 const EQUIPMENT_SLOTS = Object.keys(SLOT_LABELS) as EquipmentSlot[];
+const SLOT_ABBREV: Record<EquipmentSlot, string> = {
+  weapon: 'W',
+  necklace: 'N',
+  helmet: 'H',
+  gloves: 'G',
+  armor: 'A',
+  belt: 'B',
+};
 const PLAY_AREA_TOP = s(76);
-const PLAY_AREA_BOTTOM = s(474);
+const PLAY_AREA_BOTTOM = s(468);
+const CONTROL_PANEL_TOP = s(468);
+const CONTROL_PANEL_HEIGHT = s(136);
+const JOYSTICK_ZONE_WIDTH = s(128);
+const JOYSTICK_MAX_RADIUS = s(40);
+const JOYSTICK_DEADZONE = s(10);
+const EQUIP_GRID_X = s(132);
+const EQUIP_GRID_Y = s(498);
+const EQUIP_SYNERGY_Y = s(482);
+const SLOT_CELL_W = s(72);
+const SLOT_CELL_H = s(30);
+const SLOT_GAP = s(4);
+const END_TEST_RUN_Y = CONTROL_PANEL_TOP + CONTROL_PANEL_HEIGHT + s(8);
 const PLAYER_RADIUS = s(10);
 const BASE_PLAYER_MAX_HP = 100;
 const PLAYER_MOVE_SPEED = s(130);
@@ -111,8 +132,6 @@ const UPGRADE_POWER_STEP = 0.04;
 const BOSS_GAUGE_TIME_PER_SEC = 1.25;
 const BOSS_GAUGE_PER_KILL = 2.2;
 const TAP_MAX_DISTANCE = s(8);
-const POINTER_DRAG_THRESHOLD_SQ = s(8) * s(8);
-const MOBILE_DRAG_MIN_Y = s(260);
 const TAP_MAX_MS = 200;
 
 const TAG_ICON_CONFIG: Record<Tag, { label: string; color: number; priority: number }> = {
@@ -192,7 +211,8 @@ export class GameScene extends Phaser.Scene {
   private bossText?: Phaser.GameObjects.Text;
   private killsText?: Phaser.GameObjects.Text;
   private timeText?: Phaser.GameObjects.Text;
-  private equipmentText?: Phaser.GameObjects.Text;
+  private synergyText?: Phaser.GameObjects.Text;
+  private slotLine2Texts = new Map<EquipmentSlot, Phaser.GameObjects.Text>();
   private chestText?: Phaser.GameObjects.Text;
   private playerHpBarBg?: Phaser.GameObjects.Rectangle;
   private playerHpBarFill?: Phaser.GameObjects.Rectangle;
@@ -220,8 +240,7 @@ export class GameScene extends Phaser.Scene {
   private chestCountInRun = 0;
   private skipBonusCount = 0;
   private runBonusMaxHp = 0;
-  private pointerMoveVector = new Phaser.Math.Vector2(0, 0);
-  private isPointerMoving = false;
+  private floatingJoystick?: FloatingJoystick;
   private isRunOver = false;
   private rewardPhase: RewardPhase = 'none';
   private modal?: Phaser.GameObjects.Container;
@@ -254,8 +273,7 @@ export class GameScene extends Phaser.Scene {
     this.runBonusMaxHp = 0;
     this.playerMaxHp = this.calculatePlayerMaxHp();
     this.playerHp = this.playerMaxHp;
-    this.pointerMoveVector.set(0, 0);
-    this.isPointerMoving = false;
+    this.floatingJoystick?.forceRelease();
     this.isRunOver = false;
     this.rewardPhase = 'none';
     this.modal = undefined;
@@ -277,11 +295,14 @@ export class GameScene extends Phaser.Scene {
     this.createHud();
     this.player = this.add.image(GAME_WIDTH / 2, s(310), 'player_circle').setDepth(5);
     this.createPlayerHpBar();
-    this.setupInput();
+    this.floatingJoystick?.destroy();
     this.createEquipmentPanel();
-    this.createButton(GAME_WIDTH / 2, s(614), 'End Test Run', () => {
-      this.finishRun(false);
-    });
+    this.setupInput();
+    if (!this.sys.game.device.input.touch) {
+      this.createButton(GAME_WIDTH / 2, END_TEST_RUN_Y, 'End Test Run', () => {
+        this.finishRun(false);
+      });
+    }
     if (!getSaveData().tutorial.seenStageIntros.includes(this.stageId)) {
       this.showStageIntroModal();
     } else if (this.stageId === 1 && !getSaveData().tutorial.stage1Seen) {
@@ -290,9 +311,17 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number): void {
-    if (this.isRunOver || !this.player || this.isGameplayPaused()) {
+    if (this.isRunOver || !this.player) {
       return;
     }
+
+    if (this.isGameplayPaused()) {
+      this.floatingJoystick?.forceRelease();
+      this.floatingJoystick?.setVisible(false);
+      return;
+    }
+
+    this.floatingJoystick?.setVisible(this.sys.game.device.input.touch);
 
     this.elapsedMs += delta;
     this.updatePlayer(delta);
@@ -354,31 +383,39 @@ export class GameScene extends Phaser.Scene {
   }
 
   private createEquipmentPanel(): void {
-    this.add.rectangle(0, s(476), GAME_WIDTH, s(96), 0x12101a).setOrigin(0);
-    this.add.rectangle(GAME_WIDTH / 2, s(476), GAME_WIDTH, s(2), 0xf0c85a, 0.35);
-    this.add.text(GAME_WIDTH / 2, s(474), 'Drag lower area to move · Tap slot for info', {
-      fontSize: sf(10),
+    this.slotLine2Texts.clear();
+    this.add.rectangle(0, CONTROL_PANEL_TOP, GAME_WIDTH, s(2), 0xf0c85a, 0.35).setOrigin(0).setDepth(10);
+    this.add.rectangle(0, CONTROL_PANEL_TOP, GAME_WIDTH, CONTROL_PANEL_HEIGHT, 0x12101a).setOrigin(0).setDepth(10);
+    this.add.rectangle(JOYSTICK_ZONE_WIDTH, CONTROL_PANEL_TOP, s(2), CONTROL_PANEL_HEIGHT, 0x3a3348, 0.6)
+      .setOrigin(0)
+      .setDepth(10);
+
+    this.synergyText = this.add.text(EQUIP_GRID_X + s(4), EQUIP_SYNERGY_Y, this.getSynergyLine(), {
+      fontSize: sf(9),
       color: '#a99d8c',
-    }).setOrigin(0.5, 1);
-    this.equipmentText = this.add.text(GAME_WIDTH / 2, s(486), this.getEquippedSummary(), {
-      fontSize: sf(11),
-      color: '#d7cdbd',
-      align: 'center',
-      lineSpacing: s(3),
-    }).setOrigin(0.5, 0);
+      wordWrap: { width: s(218) },
+    }).setDepth(11);
 
     EQUIPMENT_SLOTS.forEach((slot, index) => {
       const col = index % 3;
       const row = Math.floor(index / 3);
-      const x = s(64) + col * s(116);
-      const y = s(542) + row * s(24);
-      const button = this.add.rectangle(x, y, s(102), s(20), 0x211b2d)
+      const x = EQUIP_GRID_X + col * (SLOT_CELL_W + SLOT_GAP) + SLOT_CELL_W / 2;
+      const y = EQUIP_GRID_Y + row * (SLOT_CELL_H + SLOT_GAP) + SLOT_CELL_H / 2;
+      const button = this.add.rectangle(x, y, SLOT_CELL_W, SLOT_CELL_H, 0x211b2d)
         .setStrokeStyle(s(1), 0x7a6750)
-        .setInteractive({ useHandCursor: true });
-      this.add.text(x, y, SLOT_LABELS[slot], {
+        .setInteractive({ useHandCursor: true })
+        .setDepth(11);
+      this.add.text(x, y - s(6), `${SLOT_ICONS[slot]} ${SLOT_ABBREV[slot]}`, {
         fontSize: sf(10),
         color: '#f0d8aa',
-      }).setOrigin(0.5);
+      }).setOrigin(0.5).setDepth(12);
+      const line2 = this.add.text(x, y + s(7), this.getSlotLine2Text(slot), {
+        fontSize: sf(9),
+        color: '#cfc4b2',
+        align: 'center',
+        wordWrap: { width: s(68) },
+      }).setOrigin(0.5).setDepth(12);
+      this.slotLine2Texts.set(slot, line2);
       button.on('pointerup', (pointer: Phaser.Input.Pointer) => {
         if (this.isGameplayPaused() || performance.now() < this.equipmentInfoBlockedUntilMs) {
           return;
@@ -429,26 +466,39 @@ export class GameScene extends Phaser.Scene {
     this.cursors = this.input.keyboard?.createCursorKeys();
     this.wasd = this.input.keyboard?.addKeys('W,A,S,D') as Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key> | undefined;
 
-    this.input.on('pointerdown', this.handlePointerMove, this);
-    this.input.on('pointermove', this.handlePointerMove, this);
-    this.input.on('pointerup', () => {
-      this.isPointerMoving = false;
-      this.pointerMoveVector.set(0, 0);
+    this.floatingJoystick = new FloatingJoystick({
+      zoneLeft: 0,
+      zoneTop: CONTROL_PANEL_TOP,
+      zoneWidth: JOYSTICK_ZONE_WIDTH,
+      zoneHeight: CONTROL_PANEL_HEIGHT,
+      maxRadius: JOYSTICK_MAX_RADIUS,
+      deadzone: JOYSTICK_DEADZONE,
+      depth: 15,
     });
+    this.floatingJoystick.attach(this);
+    this.floatingJoystick.setVisible(this.sys.game.device.input.touch);
+
+    this.input.on('pointerdown', this.handlePointerDown, this);
+    this.input.on('pointermove', this.handlePointerMove, this);
+    this.input.on('pointerup', this.handlePointerUp, this);
+  }
+
+  private handlePointerDown(pointer: Phaser.Input.Pointer): void {
+    if (this.isGameplayPaused() || this.isRunOver) {
+      return;
+    }
+    this.floatingJoystick?.tryActivate(pointer);
   }
 
   private handlePointerMove(pointer: Phaser.Input.Pointer): void {
-    if (this.isGameplayPaused() || !pointer.isDown || !this.player || pointer.y < MOBILE_DRAG_MIN_Y) {
+    if (this.isGameplayPaused() || this.isRunOver) {
       return;
     }
+    this.floatingJoystick?.update(pointer);
+  }
 
-    const dx = pointer.x - this.player.x;
-    const dy = pointer.y - this.player.y;
-    this.pointerMoveVector.set(dx, dy);
-    this.isPointerMoving = this.pointerMoveVector.lengthSq() > POINTER_DRAG_THRESHOLD_SQ;
-    if (this.isPointerMoving) {
-      this.pointerMoveVector.normalize();
-    }
+  private handlePointerUp(pointer: Phaser.Input.Pointer): void {
+    this.floatingJoystick?.release(pointer.id);
   }
 
   private isTap(pointer: Phaser.Input.Pointer): boolean {
@@ -475,12 +525,18 @@ export class GameScene extends Phaser.Scene {
     if (this.cursors?.down.isDown || this.wasd?.S.isDown) {
       move.y += 1;
     }
-    if (move.lengthSq() === 0 && this.isPointerMoving) {
-      move.copy(this.pointerMoveVector);
+    if (move.lengthSq() === 0 && this.floatingJoystick) {
+      const stick = this.floatingJoystick.getMoveVector();
+      if (stick.lengthSq() > 0) {
+        move.copy(stick);
+      }
     }
 
     if (move.lengthSq() > 0) {
-      move.normalize().scale((PLAYER_MOVE_SPEED * delta) / 1000);
+      if (move.length() > 1) {
+        move.normalize();
+      }
+      move.scale((PLAYER_MOVE_SPEED * delta) / 1000);
       this.player.setPosition(
         Phaser.Math.Clamp(this.player.x + move.x, PLAYER_RADIUS, GAME_WIDTH - PLAYER_RADIUS),
         Phaser.Math.Clamp(this.player.y + move.y, PLAY_AREA_TOP + PLAYER_RADIUS, PLAY_AREA_BOTTOM - PLAYER_RADIUS),
@@ -1875,7 +1931,7 @@ export class GameScene extends Phaser.Scene {
     const body = this.add.text(s(42), s(186), [
       '1. 이동만 직접 조작합니다.',
       '   PC: WASD / 방향키',
-      '   모바일: 하단 영역 드래그',
+      '   모바일: 하단 왼쪽 조이스틱 드래그',
       '',
       '2. 공격은 자동으로 발동합니다.',
       '   무기를 바꾸면 공격 방식도 바뀝니다.',
@@ -2047,7 +2103,23 @@ export class GameScene extends Phaser.Scene {
   }
 
   private refreshEquipmentPanel(): void {
-    this.equipmentText?.setText(this.getEquippedSummary());
+    for (const slot of EQUIPMENT_SLOTS) {
+      this.slotLine2Texts.get(slot)?.setText(this.getSlotLine2Text(slot));
+    }
+    this.synergyText?.setText(this.getSynergyLine());
+  }
+
+  private getSlotLine2Text(slot: EquipmentSlot): string {
+    const item = getSaveData().equipped[slot];
+    if (!item) {
+      return 'Empty';
+    }
+    const name = this.getEquipmentDisplayName(item);
+    return this.truncateText(name, 7);
+  }
+
+  private getSynergyLine(): string {
+    return this.truncateText(this.getSynergySummary(), 42);
   }
 
   private upgradeEquipment(item: RolledEquipment): RolledEquipment {
@@ -2214,19 +2286,6 @@ export class GameScene extends Phaser.Scene {
       }
     }
     return total;
-  }
-
-  private getEquippedSummary(): string {
-    const save = getSaveData();
-    const short = (slot: EquipmentSlot) => {
-      const item = save.equipped[slot];
-      return item ? this.getEquipmentDisplayName(item).slice(0, 9) : 'Empty';
-    };
-    return [
-      `W ${short('weapon')} / N ${short('necklace')} / H ${short('helmet')}`,
-      `G ${short('gloves')} / A ${short('armor')} / B ${short('belt')}`,
-      `${this.getSynergySummary()}${this.skipBonusCount > 0 ? ` / Skip HP +${this.runBonusMaxHp}` : ''}`,
-    ].join('\n');
   }
 
   private getEquipmentDisplayName(item: RolledEquipment): string {
