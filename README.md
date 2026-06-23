@@ -14,6 +14,7 @@
 - Mobile: Floating joystick (bottom-left) · Tap gear slots (bottom-right) for details
 - Equipment: Tap an equipment slot to view item details
 - Rewards: Focus a card with W/S, confirm with Enter/Space, or click · `선택 안 함` to skip
+- Reward moments: Brief slow-mo + vignette on chest/boss pickup; ~200ms safety pause + ~250ms ease-out after you choose
 
 ## Core Systems
 

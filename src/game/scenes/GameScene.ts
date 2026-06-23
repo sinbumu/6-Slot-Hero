@@ -7,6 +7,7 @@ import { getSaveData, updateSaveData } from '../storage';
 import { playBgm, playSound, type BgmCue } from '../systems/SoundSystem';
 import { FloatingJoystick } from '../systems/FloatingJoystick';
 import { KeyboardMenuNavigator, type KeyboardMenuItem } from '../systems/KeyboardMenuNavigator';
+import { RewardMomentSystem } from '../systems/RewardMomentSystem';
 import type { EquipmentSlot, RolledEquipment, RunResult, SkillKind, Tag } from '../types';
 
 interface GameSceneData {
@@ -92,7 +93,7 @@ type CombatTarget =
   | { kind: 'enemy'; enemy: EnemyState }
   | { kind: 'boss'; boss: BossState };
 
-type RewardPhase = 'none' | 'normalReward' | 'focusSlotSelect' | 'focusReward' | 'bossReward' | 'infoPopup' | 'tutorial';
+type RewardPhase = 'none' | 'recovering' | 'normalReward' | 'focusSlotSelect' | 'focusReward' | 'bossReward' | 'infoPopup' | 'tutorial';
 
 const EQUIPMENT_SLOTS = Object.keys(SLOT_LABELS) as EquipmentSlot[];
 const SLOT_ABBREV: Record<EquipmentSlot, string> = {
@@ -246,6 +247,7 @@ export class GameScene extends Phaser.Scene {
   private rewardPhase: RewardPhase = 'none';
   private modal?: Phaser.GameObjects.Container;
   private readonly keyboardMenu = new KeyboardMenuNavigator(this);
+  private rewardMoment?: RewardMomentSystem;
   private equipmentInfoBlockedUntilMs = 0;
 
   constructor() {
@@ -279,6 +281,8 @@ export class GameScene extends Phaser.Scene {
     this.isRunOver = false;
     this.rewardPhase = 'none';
     this.modal = undefined;
+    this.rewardMoment?.destroy();
+    this.rewardMoment = undefined;
   }
 
   create(): void {
@@ -300,6 +304,8 @@ export class GameScene extends Phaser.Scene {
     this.floatingJoystick?.destroy();
     this.createEquipmentPanel();
     this.setupInput();
+    this.rewardMoment = new RewardMomentSystem(this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.rewardMoment?.destroy());
     if (!this.sys.game.device.input.touch) {
       this.createButton(GAME_WIDTH / 2, END_TEST_RUN_Y, 'End Test Run', () => {
         this.finishRun(false);
@@ -323,19 +329,27 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    this.rewardMoment?.update(delta);
+    const gameplayDelta = delta * (this.rewardMoment?.getTimeScale() ?? 1);
+    const movementBlocked = this.rewardMoment?.isMovementBlocked() ?? false;
+
     this.floatingJoystick?.setVisible(this.sys.game.device.input.touch);
 
-    this.elapsedMs += delta;
-    this.updatePlayer(delta);
-    this.updateSpawns(delta);
-    this.updateEnemies(delta);
-    this.updateBareFist(delta);
-    this.updateSupportSkill(delta);
-    this.updateBossGauge(delta);
-    this.updateBoss(delta);
-    this.updateBossProjectiles(delta);
-    this.updateHazards(delta);
-    this.updateChestPickup();
+    this.elapsedMs += gameplayDelta;
+    if (!movementBlocked) {
+      this.updatePlayer(gameplayDelta);
+    }
+    this.updateSpawns(gameplayDelta);
+    this.updateEnemies(gameplayDelta);
+    this.updateBareFist(gameplayDelta);
+    this.updateSupportSkill(gameplayDelta);
+    this.updateBossGauge(gameplayDelta);
+    this.updateBoss(gameplayDelta);
+    this.updateBossProjectiles(gameplayDelta);
+    this.updateHazards(gameplayDelta);
+    if (!this.rewardMoment?.isActive()) {
+      this.updateChestPickup();
+    }
     this.updateHud();
     this.updateFloatingHealthBars();
 
@@ -1503,6 +1517,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private damagePlayer(rawDamage: number): void {
+    if (this.rewardMoment?.isInvulnerable()) {
+      return;
+    }
     const damageReduction = Phaser.Math.Clamp(this.getEquippedOptionTotal('damageReductionPercent'), 0, 0.6);
     let incomingDamage = rawDamage * (1 - damageReduction);
     if (this.shieldHp > 0) {
@@ -1543,7 +1560,9 @@ export class GameScene extends Phaser.Scene {
     }
     this.hazards = [];
     playSound('clear', this);
-    this.openRewardModal(generateRewardOptions({ stageId: this.stageId, context: 'bossReward' }), 'bossReward', 'Boss Reward');
+    this.beginRewardIntro(() => {
+      this.openRewardModal(generateRewardOptions({ stageId: this.stageId, context: 'bossReward' }), 'bossReward', 'Boss Reward');
+    });
   }
 
   private dropChest(x: number, y: number): void {
@@ -1582,19 +1601,25 @@ export class GameScene extends Phaser.Scene {
     this.chests = this.chests.filter((candidate) => candidate.id !== chest.id);
     this.chestCountInRun += 1;
     playSound('chest', this);
-    if (this.chestCountInRun % 3 === 0) {
-      this.openFocusSlotModal();
-      return;
-    }
-    const isFirstStageFirstChest = this.stageId === 1 && this.chestCountInRun === 1;
-    this.openRewardModal(
-      generateRewardOptions({
-        stageId: this.stageId,
-        context: 'normalChest',
-        focusSlot: isFirstStageFirstChest ? 'weapon' : undefined,
-      }),
-      'normalReward',
-    );
+    this.beginRewardIntro(() => {
+      if (this.chestCountInRun % 3 === 0) {
+        this.openFocusSlotModal();
+        return;
+      }
+      const isFirstStageFirstChest = this.stageId === 1 && this.chestCountInRun === 1;
+      this.openRewardModal(
+        generateRewardOptions({
+          stageId: this.stageId,
+          context: 'normalChest',
+          focusSlot: isFirstStageFirstChest ? 'weapon' : undefined,
+        }),
+        'normalReward',
+      );
+    });
+  }
+
+  private beginRewardIntro(onComplete: () => void): void {
+    this.rewardMoment?.beginIntro(onComplete);
   }
 
   private openFocusSlotModal(): void {
@@ -1834,10 +1859,13 @@ export class GameScene extends Phaser.Scene {
       this.completeStage();
       return;
     }
-    this.equipmentInfoBlockedUntilMs = performance.now() + 240;
     this.clearModal();
-    this.rewardPhase = 'none';
-    this.updateHud();
+    this.rewardPhase = 'recovering';
+    this.rewardMoment?.beginOutro(() => {
+      this.rewardPhase = 'none';
+      this.equipmentInfoBlockedUntilMs = performance.now() + 240;
+      this.updateHud();
+    });
   }
 
   private completeStage(): void {
@@ -2122,7 +2150,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private isGameplayPaused(): boolean {
-    return this.rewardPhase !== 'none';
+    return this.rewardPhase !== 'none' && this.rewardPhase !== 'recovering';
   }
 
   private flashPlayer(): void {
