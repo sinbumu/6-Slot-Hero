@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS, STAGE_COUNT } from '../constants';
+import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS, STAGE_COUNT, s, sf } from '../constants';
 import { getSaveData, resetSaveData, updateSaveData } from '../storage';
 import { applySceneVolume, playBgm, playSound } from '../systems/SoundSystem';
 import type { EquipmentSlot } from '../types';
@@ -21,22 +21,22 @@ export class StageSelectScene extends Phaser.Scene {
 
     const save = getSaveData();
     this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x111018).setOrigin(0);
-    this.add.text(GAME_WIDTH / 2, 42, 'Select Stage', {
-      fontSize: '28px',
+    this.add.text(GAME_WIDTH / 2, s(42), 'Select Stage', {
+      fontSize: sf(28),
       color: '#f8ddb0',
     }).setOrigin(0.5);
 
     for (let stageId = 1; stageId <= STAGE_COUNT; stageId += 1) {
       const isOpen = stageId <= save.unlockedStage;
       const isCleared = save.clearedStages.includes(stageId);
-      const y = 94 + (stageId - 1) * 54;
-      const button = this.add.rectangle(GAME_WIDTH / 2, y, 272, 38, isOpen ? 0x26314a : 0x25212c)
-        .setStrokeStyle(2, isOpen ? 0xf0c85a : 0x5b5568)
+      const y = s(94) + (stageId - 1) * s(54);
+      const button = this.add.rectangle(GAME_WIDTH / 2, y, s(272), s(38), isOpen ? 0x26314a : 0x25212c)
+        .setStrokeStyle(s(2), isOpen ? 0xf0c85a : 0x5b5568)
         .setInteractive({ useHandCursor: isOpen });
 
       const stateLabel = isCleared ? 'Cleared' : isOpen ? 'Open' : 'Locked';
       this.add.text(GAME_WIDTH / 2, y, `Stage ${stageId}: ${stateLabel}`, {
-        fontSize: '18px',
+        fontSize: sf(18),
         color: isCleared ? '#d8f4df' : isOpen ? '#ffffff' : '#8c8796',
       }).setOrigin(0.5);
 
@@ -48,13 +48,13 @@ export class StageSelectScene extends Phaser.Scene {
       }
     }
 
-    this.add.text(44, 382, 'Character Status', {
-      fontSize: '18px',
+    this.add.text(s(44), s(382), 'Character Status', {
+      fontSize: sf(18),
       color: '#f8ddb0',
     });
 
-    this.add.text(44, 354, `Unlocked Stage: ${save.unlockedStage} / ${STAGE_COUNT}`, {
-      fontSize: '13px',
+    this.add.text(s(44), s(354), `Unlocked Stage: ${save.unlockedStage} / ${STAGE_COUNT}`, {
+      fontSize: sf(13),
       color: '#cfc4b2',
     });
 
@@ -63,17 +63,17 @@ export class StageSelectScene extends Phaser.Scene {
       return `${SLOT_ICONS[slot]} ${SLOT_LABELS[slot]}: ${item?.nameKo ?? 'Empty'}`;
     });
 
-    this.add.text(44, 418, equippedLines.join('\n'), {
-      fontSize: '13px',
+    this.add.text(s(44), s(418), equippedLines.join('\n'), {
+      fontSize: sf(13),
       color: '#cfc4b2',
-      lineSpacing: 7,
+      lineSpacing: s(7),
     });
 
-    const volumeButton = this.add.rectangle(GAME_WIDTH / 2, 564, 132, 30, 0x26314a)
-      .setStrokeStyle(1, 0xf0c85a)
+    const volumeButton = this.add.rectangle(GAME_WIDTH / 2, s(564), s(132), s(30), 0x26314a)
+      .setStrokeStyle(s(1), 0xf0c85a)
       .setInteractive({ useHandCursor: true });
-    this.add.text(GAME_WIDTH / 2, 564, save.settings.volume > 0 ? 'Sound On' : 'Sound Off', {
-      fontSize: '13px',
+    this.add.text(GAME_WIDTH / 2, s(564), save.settings.volume > 0 ? 'Sound On' : 'Sound Off', {
+      fontSize: sf(13),
       color: '#ffffff',
     }).setOrigin(0.5);
 
@@ -92,11 +92,11 @@ export class StageSelectScene extends Phaser.Scene {
       this.render();
     });
 
-    const resetButton = this.add.rectangle(GAME_WIDTH / 2, 604, 144, 30, 0x43222a)
-      .setStrokeStyle(1, 0xff8585)
+    const resetButton = this.add.rectangle(GAME_WIDTH / 2, s(604), s(144), s(30), 0x43222a)
+      .setStrokeStyle(s(1), 0xff8585)
       .setInteractive({ useHandCursor: true });
-    this.add.text(GAME_WIDTH / 2, 604, 'Reset Data', {
-      fontSize: '14px',
+    this.add.text(GAME_WIDTH / 2, s(604), 'Reset Data', {
+      fontSize: sf(14),
       color: '#ffd6d6',
     }).setOrigin(0.5);
 

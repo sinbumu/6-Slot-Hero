@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS } from '../constants';
+import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS, s, sf } from '../constants';
 import { getSaveData } from '../storage';
 import { playBgm, playSound } from '../systems/SoundSystem';
 import type { EquipmentSlot, RunResult } from '../types';
@@ -34,8 +34,8 @@ export class ResultScene extends Phaser.Scene {
     playBgm(this, 'stage_select');
     playSound(this.result.cleared ? 'clear' : 'fail', this);
     this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x0f0d15).setOrigin(0);
-    this.add.text(GAME_WIDTH / 2, 82, this.result.cleared ? 'Stage Clear' : 'Run Failed', {
-      fontSize: '32px',
+    this.add.text(GAME_WIDTH / 2, s(82), this.result.cleared ? 'Stage Clear' : 'Run Failed', {
+      fontSize: sf(32),
       color: this.result.cleared ? '#f8ddb0' : '#ff9d9d',
     }).setOrigin(0.5);
 
@@ -46,35 +46,35 @@ export class ResultScene extends Phaser.Scene {
       `Equipped Count: ${this.result.equippedCount}`,
     ];
 
-    this.add.text(54, 146, summary.join('\n'), {
-      fontSize: '17px',
+    this.add.text(s(54), s(146), summary.join('\n'), {
+      fontSize: sf(17),
       color: '#ffffff',
-      lineSpacing: 12,
+      lineSpacing: s(12),
     });
 
     const equipmentSummary = EQUIPMENT_SLOTS.map((slot) => `${SLOT_ICONS[slot]} ${SLOT_LABELS[slot]}: ${save.equipped[slot]?.nameKo ?? 'Empty'}`);
-    this.add.text(54, 278, ['Current Equipment', ...equipmentSummary].join('\n'), {
-      fontSize: '13px',
+    this.add.text(s(54), s(278), ['Current Equipment', ...equipmentSummary].join('\n'), {
+      fontSize: sf(13),
       color: '#cfc4b2',
-      lineSpacing: 7,
+      lineSpacing: s(7),
     });
 
-    this.createButton(GAME_WIDTH / 2, 526, 'Retry Stage', () => {
+    this.createButton(GAME_WIDTH / 2, s(526), 'Retry Stage', () => {
       playSound('ui_select', this);
       this.scene.start('GameScene', { stageId: this.result.stageId });
     });
-    this.createButton(GAME_WIDTH / 2, 574, 'Stage Select', () => {
+    this.createButton(GAME_WIDTH / 2, s(574), 'Stage Select', () => {
       playSound('ui_click', this);
       this.scene.start('StageSelectScene');
     });
   }
 
   private createButton(x: number, y: number, label: string, onClick: () => void): void {
-    const button = this.add.rectangle(x, y, 176, 34, 0x26314a)
-      .setStrokeStyle(2, 0xf0c85a)
+    const button = this.add.rectangle(x, y, s(176), s(34), 0x26314a)
+      .setStrokeStyle(s(2), 0xf0c85a)
       .setInteractive({ useHandCursor: true });
     this.add.text(x, y, label, {
-      fontSize: '15px',
+      fontSize: sf(15),
       color: '#ffffff',
     }).setOrigin(0.5);
     button.on('pointerdown', onClick);

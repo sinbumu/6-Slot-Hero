@@ -35,6 +35,8 @@
 - CSS
 - localStorage
 
+Logical resolution: **1080×1920** (9:16 portrait, scaled from a 360×640 design base via `RENDER_SCALE=3`).
+
 ## Local Development
 
 ```bash

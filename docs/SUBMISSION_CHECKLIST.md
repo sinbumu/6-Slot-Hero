@@ -32,7 +32,7 @@
 
 ## Mobile Test
 
-- [ ] Game fits a 360x640-like portrait viewport
+- [ ] Game fits a 1080x1920 (9:16) portrait viewport via Scale.FIT
 - [ ] Dragging in the lower combat/control/equipment area moves the player
 - [ ] Equipment slot short tap opens item info
 - [ ] Dragging over equipment slots does not accidentally open item info

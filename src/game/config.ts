@@ -6,19 +6,12 @@ import { ResultScene } from './scenes/ResultScene';
 import { StageSelectScene } from './scenes/StageSelectScene';
 import { TitleScene } from './scenes/TitleScene';
 
-const getRenderResolution = (): number => {
-  if (typeof window === 'undefined') {
-    return 1;
-  }
-  return Phaser.Math.Clamp(window.devicePixelRatio || 1, 1, 2);
-};
-
 export const gameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
   parent: 'app',
   width: GAME_WIDTH,
   height: GAME_HEIGHT,
-  zoom: getRenderResolution(),
+  zoom: 1,
   backgroundColor: '#09080d',
   antialias: true,
   pixelArt: false,
