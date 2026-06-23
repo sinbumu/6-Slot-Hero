@@ -24,17 +24,22 @@ export class TitleScene extends Phaser.Scene {
       color: '#b8a994',
     }).setOrigin(0.5);
 
-    const startButton = this.add.rectangle(GAME_WIDTH / 2, s(420), s(248), s(44), 0x26314a, 0.45)
+    const buttonY = s(418);
+    const startButton = this.add.rectangle(GAME_WIDTH / 2, buttonY, s(196), s(48), 0x26314a, 0.55)
       .setStrokeStyle(s(2), 0xf0c85a)
       .setInteractive({ useHandCursor: true });
-    const prompt = this.add.text(GAME_WIDTH / 2, s(420), 'Start · Click / Enter / Space', {
-      fontSize: sf(16),
+    const startLabel = this.add.text(GAME_WIDTH / 2, buttonY, 'Start', {
+      fontSize: sf(20),
       color: '#ffffff',
+    }).setOrigin(0.5);
+    this.add.text(GAME_WIDTH / 2, buttonY + s(38), 'Click · Enter · Space', {
+      fontSize: sf(11),
+      color: '#9a9080',
     }).setOrigin(0.5);
 
     this.tweens.add({
-      targets: prompt,
-      alpha: 0.35,
+      targets: [startButton, startLabel],
+      alpha: 0.72,
       duration: 750,
       yoyo: true,
       repeat: -1,
