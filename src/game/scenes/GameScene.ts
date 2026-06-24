@@ -1,7 +1,17 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, SLOT_ICONS, SLOT_LABELS, STAGE_COUNT, s, sf } from '../constants';
 import { BOSS_DEFS, type BossDef, type BossPatternDef } from '../data/bosses';
-import { ENEMY_DEFS, type EnemyDef } from '../data/enemies';
+import {
+  ELITE_CONTACT_DAMAGE_BONUS,
+  ELITE_HP_MULTIPLIER,
+  ELITE_SCALE,
+  ELITE_SPAWN_MIN_STAGE,
+  ENEMY_DEFS,
+  getEliteSpawnChance,
+  getStageMobDamageMultiplier,
+  pickEnemyDefForStage,
+  type EnemyDef,
+} from '../data/enemies';
 import { generateRewardOptions, getRarityLabel } from '../data/equipment';
 import { getSaveData, updateSaveData } from '../storage';
 import { playBgm, playSound, type BgmCue } from '../systems/SoundSystem';
@@ -23,6 +33,11 @@ interface EnemyState {
   contactCooldownMs: number;
   slowMs: number;
   slowMultiplier: number;
+  isElite: boolean;
+  eliteChargeCooldownMs: number;
+  eliteChargeMs: number;
+  eliteChargeVelocity: Phaser.Math.Vector2;
+  rangedCooldownMs: number;
 }
 
 interface ChestState {
@@ -40,6 +55,7 @@ interface BossState {
   patternCooldowns: Partial<Record<BossPatternDef['type'], number>>;
   chargeVelocity: Phaser.Math.Vector2;
   chargeMs: number;
+  enragePhase: boolean;
 }
 
 interface HazardState {
@@ -142,6 +158,21 @@ const MAX_EQUIPMENT_UPGRADE = 10;
 const UPGRADE_POWER_STEP = 0.04;
 const BOSS_GAUGE_TIME_PER_SEC = 1.25;
 const BOSS_GAUGE_PER_KILL = 2.2;
+const BOSS_GAUGE_PRE_BOSS_THRESHOLD = 80;
+const BOSS_ENRAGE_HP_RATIO = 0.7;
+const BOSS_ENRAGE_COOLDOWN_MULT = 0.85;
+const BOSS_ENRAGE_TELEGRAPH_MULT = 0.85;
+const BOSS_STAGE_PATTERN_BALANCE_MIN_STAGE = 3;
+const BOSS_STAGE_PATTERN_SPEED_MULT = 1.5;
+const BOSS_STAGE_PATTERN_DAMAGE_MULT = 1.5;
+const PRE_BOSS_SPAWN_INTERVAL_MULT = 0.72;
+const RUNNER_BURST_CHANCE = 0.28;
+const ELITE_CHARGE_COOLDOWN_MS = 5000;
+const ELITE_CHARGE_TELEGRAPH_MS = 320;
+const ELITE_CHARGE_DURATION_MS = 380;
+const ELITE_CHARGE_SPEED = 420;
+const ELITE_CHARGE_TRIGGER_MAX_DISTANCE = 260;
+const ELITE_CHARGE_TRIGGER_MIN_DISTANCE = 36;
 const TAP_MAX_DISTANCE = s(8);
 const TAP_MAX_MS = 200;
 const MAX_POISON_STACKS = 5;
@@ -149,7 +180,7 @@ const POISON_TICK_MS = 500;
 const POISON_DOT_FALLBACK_DURATION_MS = 3200;
 const ECHO_ATTACK_DELAY_MS = 80;
 const SYNERGY_DAMAGE_BONUS_PER_TAG = 0.04;
-const SYNERGY_DAMAGE_BONUS_CAP = 0.16;
+const SYNERGY_DAMAGE_BONUS_CAP = 0.12;
 const SHIELD_BREAK_EXPLOSION_DAMAGE_SCALE = 0.55;
 const SHIELD_CAST_EXPLOSION_DAMAGE_SCALE = 0.45;
 const ORBIT_TICK_RATE_MIN = 0.75;
@@ -250,6 +281,7 @@ export class GameScene extends Phaser.Scene {
   private hazards: HazardState[] = [];
   private poisonDebuffs = new Map<string, PoisonDebuffState>();
   private bossProjectiles: BossProjectileState[] = [];
+  private enemyProjectiles: BossProjectileState[] = [];
   private spawnTimerMs = 0;
   private attackTimerMs = 0;
   private supportAttackTimerMs = 800;
@@ -289,6 +321,7 @@ export class GameScene extends Phaser.Scene {
     this.hazards = [];
     this.poisonDebuffs.clear();
     this.bossProjectiles = [];
+    this.enemyProjectiles = [];
     this.spawnTimerMs = 0;
     this.attackTimerMs = 0;
     this.supportAttackTimerMs = 800;
@@ -374,6 +407,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.updateSpawns(gameplayDelta);
     this.updateEnemies(gameplayDelta);
+    this.updateEnemyProjectiles(gameplayDelta);
     this.updateBareFist(gameplayDelta);
     this.updateSupportSkill(gameplayDelta);
     this.updateBossGauge(gameplayDelta);
@@ -606,27 +640,53 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    this.spawnEnemy();
-    this.spawnTimerMs = Math.max(280, 950 - this.stageId * 90 - this.elapsedMs / 500);
+    const spawned = this.spawnEnemy();
+    const preBossPressure = this.bossGauge >= BOSS_GAUGE_PRE_BOSS_THRESHOLD;
+    const intervalFloor = preBossPressure ? 220 : 280;
+    const intervalBase = Math.max(intervalFloor, 950 - this.stageId * 90 - this.elapsedMs / 500);
+    const intervalMult = preBossPressure ? PRE_BOSS_SPAWN_INTERVAL_MULT : 1;
+    this.spawnTimerMs = intervalBase * intervalMult;
+
+    if (spawned?.def.id === 'runner' && this.stageId >= 3 && Math.random() < RUNNER_BURST_CHANCE) {
+      const runnerDef = ENEMY_DEFS.find((def) => def.id === 'runner');
+      if (runnerDef) {
+        this.spawnEnemy(runnerDef);
+      }
+    }
   }
 
-  private spawnEnemy(): void {
-    const def = Phaser.Utils.Array.GetRandom(ENEMY_DEFS);
+  private spawnEnemy(forcedDef?: EnemyDef): EnemyState | undefined {
+    const preBossPressure = this.bossGauge >= BOSS_GAUGE_PRE_BOSS_THRESHOLD;
+    const def = forcedDef ?? pickEnemyDefForStage(this.stageId, preBossPressure);
     const side = Phaser.Math.Between(0, 3);
     const x = side === 0 ? s(-16) : side === 1 ? GAME_WIDTH + s(16) : Phaser.Math.Between(0, GAME_WIDTH);
     const y = side === 2 ? PLAY_AREA_TOP - s(16) : side === 3 ? PLAY_AREA_BOTTOM + s(16) : Phaser.Math.Between(PLAY_AREA_TOP, PLAY_AREA_BOTTOM);
     const sprite = this.add.image(x, y, def.textureKey).setDepth(3);
     const stageHpMultiplier = 1 + (this.stageId - 1) * 0.55;
-    this.enemies.push({
+    const canBeElite = !forcedDef && def.id !== 'skirmisher' && this.stageId >= ELITE_SPAWN_MIN_STAGE;
+    const isElite = canBeElite && Math.random() < getEliteSpawnChance(this.stageId);
+    const eliteHpMultiplier = isElite ? ELITE_HP_MULTIPLIER : 1;
+    if (isElite) {
+      sprite.setScale(ELITE_SCALE).setTint(0xff9a9a);
+    }
+
+    const enemy: EnemyState = {
       id: `${def.id}_${this.elapsedMs}_${Math.random()}`,
       def,
       sprite,
-      hp: Math.round(def.hp * stageHpMultiplier),
-      radius: sprite.width / 2,
+      hp: Math.round(def.hp * stageHpMultiplier * eliteHpMultiplier),
+      radius: (sprite.width / 2) * (isElite ? ELITE_SCALE : 1),
       contactCooldownMs: 0,
       slowMs: 0,
       slowMultiplier: 1,
-    });
+      isElite,
+      eliteChargeCooldownMs: Phaser.Math.Between(1200, 2800),
+      eliteChargeMs: 0,
+      eliteChargeVelocity: new Phaser.Math.Vector2(0, 0),
+      rangedCooldownMs: Phaser.Math.Between(600, 1400),
+    };
+    this.enemies.push(enemy);
+    return enemy;
   }
 
   private updateEnemies(delta: number): void {
@@ -635,6 +695,45 @@ export class GameScene extends Phaser.Scene {
     }
 
     for (const enemy of this.enemies) {
+      if (enemy.eliteChargeMs > 0) {
+        enemy.eliteChargeMs -= delta;
+        enemy.sprite.setPosition(
+          Phaser.Math.Clamp(enemy.sprite.x + (enemy.eliteChargeVelocity.x * delta) / 1000, enemy.radius, GAME_WIDTH - enemy.radius),
+          Phaser.Math.Clamp(enemy.sprite.y + (enemy.eliteChargeVelocity.y * delta) / 1000, PLAY_AREA_TOP + enemy.radius, PLAY_AREA_BOTTOM - enemy.radius),
+        );
+        enemy.contactCooldownMs = Math.max(0, enemy.contactCooldownMs - delta);
+        if (enemy.contactCooldownMs <= 0 && this.isCircleOverlap(enemy.sprite.x, enemy.sprite.y, enemy.radius, this.player.x, this.player.y, PLAYER_RADIUS)) {
+          this.damagePlayer(this.getEnemyContactDamage(enemy));
+          enemy.contactCooldownMs = 700;
+        }
+        continue;
+      }
+
+      const distanceToPlayer = Phaser.Math.Distance.Between(enemy.sprite.x, enemy.sprite.y, this.player.x, this.player.y);
+      enemy.rangedCooldownMs = Math.max(0, enemy.rangedCooldownMs - delta);
+
+      if (enemy.def.rangedDamage && enemy.rangedCooldownMs <= 0) {
+        const minRange = s(enemy.def.rangedMinDistance ?? 48);
+        const maxRange = s(enemy.def.rangedMaxDistance ?? 180);
+        if (distanceToPlayer >= minRange && distanceToPlayer <= maxRange) {
+          this.fireEnemyProjectile(enemy);
+          enemy.rangedCooldownMs = enemy.def.rangedCooldownMs ?? 1467;
+          continue;
+        }
+      }
+
+      if (enemy.isElite) {
+        enemy.eliteChargeCooldownMs = Math.max(0, enemy.eliteChargeCooldownMs - delta);
+        if (
+          enemy.eliteChargeCooldownMs <= 0
+          && distanceToPlayer < s(ELITE_CHARGE_TRIGGER_MAX_DISTANCE)
+          && distanceToPlayer > s(ELITE_CHARGE_TRIGGER_MIN_DISTANCE)
+        ) {
+          this.triggerEliteCharge(enemy);
+          continue;
+        }
+      }
+
       const direction = new Phaser.Math.Vector2(this.player.x - enemy.sprite.x, this.player.y - enemy.sprite.y);
       if (direction.lengthSq() > 0) {
         enemy.slowMs = Math.max(0, enemy.slowMs - delta);
@@ -645,11 +744,100 @@ export class GameScene extends Phaser.Scene {
 
       enemy.contactCooldownMs = Math.max(0, enemy.contactCooldownMs - delta);
       if (enemy.contactCooldownMs <= 0 && this.isCircleOverlap(enemy.sprite.x, enemy.sprite.y, enemy.radius, this.player.x, this.player.y, PLAYER_RADIUS)) {
-        const stageDamageBonus = Math.max(0, (this.stageId - 1) * 0.5);
-        this.damagePlayer(enemy.def.contactDamage + stageDamageBonus);
+        this.damagePlayer(this.getEnemyContactDamage(enemy));
         enemy.contactCooldownMs = 700;
       }
     }
+  }
+
+  private getEnemyContactDamage(enemy: EnemyState): number {
+    const stageDamageBonus = Math.max(0, (this.stageId - 1) * 0.5);
+    const eliteBonus = enemy.isElite ? ELITE_CONTACT_DAMAGE_BONUS : 0;
+    const rawDamage = enemy.def.contactDamage + stageDamageBonus + eliteBonus;
+    return rawDamage * getStageMobDamageMultiplier(this.stageId);
+  }
+
+  private getEnemyRangedDamage(enemy: EnemyState): number {
+    const stageDamageBonus = Math.max(0, (this.stageId - 1) * 0.35);
+    const rawDamage = (enemy.def.rangedDamage ?? 0) + stageDamageBonus;
+    return rawDamage * getStageMobDamageMultiplier(this.stageId);
+  }
+
+  private triggerEliteCharge(enemy: EnemyState): void {
+    if (!this.player) {
+      return;
+    }
+
+    const direction = new Phaser.Math.Vector2(this.player.x - enemy.sprite.x, this.player.y - enemy.sprite.y).normalize();
+    const warning = this.add.rectangle(enemy.sprite.x, enemy.sprite.y, s(144), s(6), 0xff5555, 0.55)
+      .setRotation(direction.angle())
+      .setDepth(7);
+    this.time.delayedCall(ELITE_CHARGE_TELEGRAPH_MS, () => {
+      warning.destroy();
+      if (!this.enemies.includes(enemy)) {
+        return;
+      }
+      enemy.eliteChargeVelocity = direction.scale(s(ELITE_CHARGE_SPEED));
+      enemy.eliteChargeMs = ELITE_CHARGE_DURATION_MS;
+      enemy.eliteChargeCooldownMs = ELITE_CHARGE_COOLDOWN_MS;
+    });
+  }
+
+  private fireEnemyProjectile(enemy: EnemyState): void {
+    if (!this.player || !enemy.def.rangedDamage) {
+      return;
+    }
+
+    const angle = Phaser.Math.Angle.Between(enemy.sprite.x, enemy.sprite.y, this.player.x, this.player.y);
+    this.spawnEnemyProjectile(
+      enemy.sprite.x,
+      enemy.sprite.y,
+      angle,
+      s(enemy.def.projectileSpeed ?? 118),
+      this.getEnemyRangedDamage(enemy),
+    );
+  }
+
+  private spawnEnemyProjectile(x: number, y: number, angle: number, speed: number, damage: number): void {
+    const sprite = this.add.image(x, y, 'projectile_orb').setDepth(6).setTint(0x9b7cff).setScale(0.85);
+    this.enemyProjectiles.push({
+      id: `enemy_projectile_${this.elapsedMs}_${Math.random()}`,
+      sprite,
+      velocity: new Phaser.Math.Vector2(Math.cos(angle), Math.sin(angle)).scale(speed),
+      damage,
+      radius: s(5),
+      lifeMs: 2400,
+    });
+  }
+
+  private updateEnemyProjectiles(delta: number): void {
+    if (!this.player) {
+      return;
+    }
+
+    for (const projectile of [...this.enemyProjectiles]) {
+      projectile.lifeMs -= delta;
+      projectile.sprite.setPosition(
+        projectile.sprite.x + (projectile.velocity.x * delta) / 1000,
+        projectile.sprite.y + (projectile.velocity.y * delta) / 1000,
+      );
+
+      const outOfBounds = projectile.sprite.x < s(-24) || projectile.sprite.x > GAME_WIDTH + s(24) || projectile.sprite.y < PLAY_AREA_TOP - s(24) || projectile.sprite.y > PLAY_AREA_BOTTOM + s(24);
+      if (projectile.lifeMs <= 0 || outOfBounds) {
+        this.removeEnemyProjectile(projectile);
+        continue;
+      }
+
+      if (this.isCircleOverlap(projectile.sprite.x, projectile.sprite.y, projectile.radius, this.player.x, this.player.y, PLAYER_RADIUS)) {
+        this.damagePlayer(projectile.damage);
+        this.removeEnemyProjectile(projectile);
+      }
+    }
+  }
+
+  private removeEnemyProjectile(projectile: BossProjectileState): void {
+    projectile.sprite.destroy();
+    this.enemyProjectiles = this.enemyProjectiles.filter((candidate) => candidate.id !== projectile.id);
   }
 
   private updateBareFist(delta: number): void {
@@ -1039,6 +1227,7 @@ export class GameScene extends Phaser.Scene {
       patternCooldowns: {},
       chargeVelocity: new Phaser.Math.Vector2(0, 0),
       chargeMs: 0,
+      enragePhase: false,
     };
     this.createBossHpBar();
     const announce = this.add.text(GAME_WIDTH / 2, s(120), `${def.nameKo} 등장!`, {
@@ -1083,13 +1272,81 @@ export class GameScene extends Phaser.Scene {
     }
 
     for (const pattern of boss.def.patterns) {
-      const currentCooldown = boss.patternCooldowns[pattern.type] ?? pattern.cooldownMs * 0.45;
+      const cooldownMult = this.getBossPatternCooldownMultiplier();
+      const currentCooldown = boss.patternCooldowns[pattern.type] ?? pattern.cooldownMs * 0.45 * cooldownMult;
       boss.patternCooldowns[pattern.type] = currentCooldown - delta;
       if ((boss.patternCooldowns[pattern.type] ?? 0) <= 0) {
         this.triggerBossPattern(pattern);
-        boss.patternCooldowns[pattern.type] = pattern.cooldownMs;
+        boss.patternCooldowns[pattern.type] = pattern.cooldownMs * cooldownMult;
       }
     }
+  }
+
+  private getBossGaugePerKill(): number {
+    if (this.stageId >= 5) {
+      return BOSS_GAUGE_PER_KILL * 0.55;
+    }
+    if (this.stageId >= 4) {
+      return BOSS_GAUGE_PER_KILL * 0.65;
+    }
+    if (this.stageId >= 3) {
+      return BOSS_GAUGE_PER_KILL * 0.8;
+    }
+    return BOSS_GAUGE_PER_KILL;
+  }
+
+  private getBossPatternCooldownMultiplier(): number {
+    let mult = 1;
+    if (this.stageId >= BOSS_STAGE_PATTERN_BALANCE_MIN_STAGE) {
+      mult *= 1 / BOSS_STAGE_PATTERN_SPEED_MULT;
+    }
+    if (this.boss?.enragePhase) {
+      mult *= BOSS_ENRAGE_COOLDOWN_MULT;
+    }
+    return mult;
+  }
+
+  private getBossPatternDamage(pattern: BossPatternDef): number {
+    const stageMult = this.stageId >= BOSS_STAGE_PATTERN_BALANCE_MIN_STAGE ? BOSS_STAGE_PATTERN_DAMAGE_MULT : 1;
+    return pattern.damage * stageMult;
+  }
+
+  private getBossTelegraphMs(pattern: BossPatternDef): number {
+    let ms = pattern.telegraphMs;
+    if (this.stageId >= BOSS_STAGE_PATTERN_BALANCE_MIN_STAGE) {
+      ms = Math.round(ms / BOSS_STAGE_PATTERN_SPEED_MULT);
+    }
+    if (this.boss?.enragePhase) {
+      ms = Math.max(280, Math.round(ms * BOSS_ENRAGE_TELEGRAPH_MULT));
+    }
+    return ms;
+  }
+
+  private tryEnterBossEnragePhase(): void {
+    if (!this.boss || this.boss.enragePhase || this.boss.hp <= 0) {
+      return;
+    }
+
+    const hpRatio = this.boss.hp / this.boss.def.hp;
+    if (hpRatio > BOSS_ENRAGE_HP_RATIO) {
+      return;
+    }
+
+    this.boss.enragePhase = true;
+    this.boss.sprite.setTint(0xff7070);
+    const announce = this.add.text(GAME_WIDTH / 2, s(108), '분노 — 패턴 가속!', {
+      fontSize: sf(16),
+      color: '#ff9a9a',
+      backgroundColor: '#00000088',
+      padding: { x: s(8), y: s(4) },
+    }).setOrigin(0.5).setDepth(20).setAlpha(1);
+    this.tweens.add({
+      targets: announce,
+      y: s(88),
+      alpha: 0,
+      duration: 1200,
+      onComplete: () => announce.destroy(),
+    });
   }
 
   private triggerBossPattern(pattern: BossPatternDef): void {
@@ -1125,7 +1382,7 @@ export class GameScene extends Phaser.Scene {
     const warning = this.add.rectangle(this.boss.sprite.x, this.boss.sprite.y, s(150), s(8), 0xff3d3d, 0.55)
       .setRotation(direction.angle())
       .setDepth(8);
-    this.time.delayedCall(pattern.telegraphMs, () => {
+    this.time.delayedCall(this.getBossTelegraphMs(pattern), () => {
       warning.destroy();
       if (!this.boss) {
         return;
@@ -1140,9 +1397,9 @@ export class GameScene extends Phaser.Scene {
     const warning = this.add.circle(x, y, radius, 0xff3d3d, 0.18)
       .setStrokeStyle(s(2), 0xff8a3d, 0.9)
       .setDepth(7);
-    this.time.delayedCall(pattern.telegraphMs, () => {
+    this.time.delayedCall(this.getBossTelegraphMs(pattern), () => {
       warning.destroy();
-      this.addHazard(x, y, radius, pattern.damage, 260);
+      this.addHazard(x, y, radius, this.getBossPatternDamage(pattern), 260);
     });
   }
 
@@ -1154,7 +1411,7 @@ export class GameScene extends Phaser.Scene {
     const warning = this.add.circle(this.boss.sprite.x, this.boss.sprite.y, s(36), 0x7ac7ff, 0.2)
       .setStrokeStyle(s(2), 0x7ac7ff)
       .setDepth(7);
-    this.time.delayedCall(pattern.telegraphMs, () => {
+    this.time.delayedCall(this.getBossTelegraphMs(pattern), () => {
       warning.destroy();
       if (!this.boss) {
         return;
@@ -1162,7 +1419,7 @@ export class GameScene extends Phaser.Scene {
       const count = pattern.projectileCount ?? 8;
       for (let index = 0; index < count; index += 1) {
         const angle = (Math.PI * 2 * index) / count;
-        this.spawnBossProjectile(this.boss.sprite.x, this.boss.sprite.y, angle, s(pattern.projectileSpeed ?? 145), pattern.damage);
+        this.spawnBossProjectile(this.boss.sprite.x, this.boss.sprite.y, angle, s(pattern.projectileSpeed ?? 145), this.getBossPatternDamage(pattern));
       }
     });
   }
@@ -1183,9 +1440,9 @@ export class GameScene extends Phaser.Scene {
     const warning = this.add.rectangle(this.boss.sprite.x, this.boss.sprite.y, s(260), s(22), 0xaa55ff, 0.35)
       .setRotation(direction.angle())
       .setDepth(7);
-    this.time.delayedCall(pattern.telegraphMs, () => {
+    this.time.delayedCall(this.getBossTelegraphMs(pattern), () => {
       warning.destroy();
-      this.spawnBossProjectile(this.boss?.sprite.x ?? GAME_WIDTH / 2, this.boss?.sprite.y ?? PLAY_AREA_TOP, direction.angle(), s(260), pattern.damage, s(18), 780);
+      this.spawnBossProjectile(this.boss?.sprite.x ?? GAME_WIDTH / 2, this.boss?.sprite.y ?? PLAY_AREA_TOP, direction.angle(), s(260), this.getBossPatternDamage(pattern), s(18), 780);
     });
   }
 
@@ -1749,7 +2006,7 @@ export class GameScene extends Phaser.Scene {
     this.enemies = this.enemies.filter((candidate) => candidate.id !== enemy.id);
     this.kills += 1;
     this.killsSinceLastChest += 1;
-    this.bossGauge = Math.min(100, this.bossGauge + BOSS_GAUGE_PER_KILL);
+    this.bossGauge = Math.min(100, this.bossGauge + this.getBossGaugePerKill());
     updateSaveData((save) => ({
       ...save,
       stats: {
@@ -1771,6 +2028,7 @@ export class GameScene extends Phaser.Scene {
 
     const finalDamage = damage * this.getMultiplierProduct('bossDamageMultiplier');
     this.boss.hp -= finalDamage;
+    this.tryEnterBossEnragePhase();
     const lifesteal = this.getEquippedOptionTotal('lifestealPercent');
     if (lifesteal > 0) {
       this.playerHp = Math.min(this.playerMaxHp, this.playerHp + finalDamage * lifesteal);

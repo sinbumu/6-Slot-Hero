@@ -341,7 +341,7 @@ function getBestRarityForStage(stageId: number): Rarity {
 }
 
 function getStageStatMultiplier(stageId: number): number {
-  return 1 + (stageId - 1) * 0.18;
+  return 1 + (stageId - 1) * 0.12;
 }
 
 function getRarityStatMultiplier(rarity: Rarity): number {
