@@ -7,7 +7,7 @@ import { getSaveData, updateSaveData } from '../storage';
 import { playBgm, playSound, type BgmCue } from '../systems/SoundSystem';
 import { FloatingJoystick } from '../systems/FloatingJoystick';
 import { KeyboardMenuNavigator, type KeyboardMenuItem } from '../systems/KeyboardMenuNavigator';
-import { RewardMomentSystem } from '../systems/RewardMomentSystem';
+import { REWARD_OUTRO_EASE_MS, REWARD_OUTRO_GRACE_MS, RewardMomentSystem } from '../systems/RewardMomentSystem';
 import type { EquipmentSlot, RolledEquipment, RunResult, SkillKind, Tag } from '../types';
 
 interface GameSceneData {
@@ -323,15 +323,14 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    const gameplayDelta = delta * (this.rewardMoment?.getTimeScale() ?? 1);
+    const movementBlocked = this.rewardMoment?.isMovementBlocked() ?? false;
+
     if (this.isGameplayPaused()) {
       this.floatingJoystick?.forceRelease();
       this.floatingJoystick?.setVisible(false);
       return;
     }
-
-    this.rewardMoment?.update(delta);
-    const gameplayDelta = delta * (this.rewardMoment?.getTimeScale() ?? 1);
-    const movementBlocked = this.rewardMoment?.isMovementBlocked() ?? false;
 
     this.floatingJoystick?.setVisible(this.sys.game.device.input.touch);
 
@@ -433,7 +432,7 @@ export class GameScene extends Phaser.Scene {
       }).setOrigin(0.5).setDepth(12);
       this.slotLine2Texts.set(slot, line2);
       button.on('pointerup', (pointer: Phaser.Input.Pointer) => {
-        if (this.isGameplayPaused() || performance.now() < this.equipmentInfoBlockedUntilMs) {
+        if (this.isGameplayPaused() || this.isRewardFlowLocked() || performance.now() < this.equipmentInfoBlockedUntilMs) {
           return;
         }
         if (this.isTap(pointer)) {
@@ -500,14 +499,14 @@ export class GameScene extends Phaser.Scene {
   }
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
-    if (this.isGameplayPaused() || this.isRunOver) {
+    if (this.isGameplayPaused() || this.isRewardFlowLocked() || this.isRunOver) {
       return;
     }
     this.floatingJoystick?.tryActivate(pointer);
   }
 
   private handlePointerMove(pointer: Phaser.Input.Pointer): void {
-    if (this.isGameplayPaused() || this.isRunOver) {
+    if (this.isGameplayPaused() || this.isRewardFlowLocked() || this.isRunOver) {
       return;
     }
     this.floatingJoystick?.update(pointer);
@@ -1619,10 +1618,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   private beginRewardIntro(onComplete: () => void): void {
-    this.rewardMoment?.beginIntro(onComplete);
+    if (!this.rewardMoment) {
+      onComplete();
+      return;
+    }
+    this.rewardMoment.beginIntro(onComplete);
   }
 
   private openFocusSlotModal(): void {
+    this.rewardMoment?.cancel();
     this.rewardPhase = 'focusSlotSelect';
     this.clearModal();
 
@@ -1697,6 +1701,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private openRewardModal(options: RolledEquipment[], phase: 'normalReward' | 'focusReward' | 'bossReward', titleText = 'Reward Select'): void {
+    this.rewardMoment?.cancel();
     this.rewardPhase = phase;
     this.clearModal();
     const shouldShowFirstRewardHint = phase !== 'bossReward' && !getSaveData().tutorial.firstRewardSeen;
@@ -1861,10 +1866,22 @@ export class GameScene extends Phaser.Scene {
     }
     this.clearModal();
     this.rewardPhase = 'recovering';
-    this.rewardMoment?.beginOutro(() => {
+    const finishRecovery = (): void => {
       this.rewardPhase = 'none';
       this.equipmentInfoBlockedUntilMs = performance.now() + 240;
       this.updateHud();
+    };
+    if (!this.rewardMoment) {
+      finishRecovery();
+      return;
+    }
+    this.rewardMoment.beginOutro(finishRecovery);
+    this.time.delayedCall(REWARD_OUTRO_GRACE_MS + REWARD_OUTRO_EASE_MS + 120, () => {
+      if (this.rewardPhase !== 'recovering') {
+        return;
+      }
+      this.rewardMoment?.cancel();
+      finishRecovery();
     });
   }
 
@@ -2151,6 +2168,10 @@ export class GameScene extends Phaser.Scene {
 
   private isGameplayPaused(): boolean {
     return this.rewardPhase !== 'none' && this.rewardPhase !== 'recovering';
+  }
+
+  private isRewardFlowLocked(): boolean {
+    return (this.rewardMoment?.isActive() ?? false) || this.rewardPhase === 'recovering';
   }
 
   private flashPlayer(): void {

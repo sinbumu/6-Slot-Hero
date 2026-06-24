@@ -12,22 +12,25 @@ type RewardMomentState = 'idle' | 'intro' | 'outroGrace' | 'outroEase';
 
 export class RewardMomentSystem {
   private state: RewardMomentState = 'idle';
-  private stateElapsedMs = 0;
   private timeScale = 1;
   private invulnerable = false;
   private movementBlocked = false;
   private overlay?: Phaser.GameObjects.Rectangle;
-  private introCallback?: () => void;
-  private outroCallback?: () => void;
+  private pendingTimers: Phaser.Time.TimerEvent[] = [];
+  private pendingTweens: Phaser.Tweens.Tween[] = [];
   private baseZoom = 1;
 
   constructor(private readonly scene: Phaser.Scene) {}
 
   destroy(): void {
+    this.cancelPending();
     this.overlay?.destroy();
     this.overlay = undefined;
-    this.introCallback = undefined;
-    this.outroCallback = undefined;
+    this.resetState();
+  }
+
+  cancel(): void {
+    this.cancelPending();
     this.resetState();
   }
 
@@ -48,100 +51,107 @@ export class RewardMomentSystem {
   }
 
   beginIntro(onComplete: () => void): void {
-    this.killOverlayTweens();
+    this.cancelPending();
     this.state = 'intro';
-    this.stateElapsedMs = 0;
     this.timeScale = INTRO_TIME_SCALE;
     this.invulnerable = true;
     this.movementBlocked = false;
-    this.introCallback = onComplete;
     this.baseZoom = this.scene.cameras.main.zoom;
 
     const overlay = this.ensureOverlay();
     overlay.setAlpha(0);
-    this.scene.tweens.add({
+    this.pendingTweens.push(this.scene.tweens.add({
       targets: overlay,
       alpha: 0.34,
       duration: 90,
       ease: 'Sine.Out',
-    });
+    }));
     this.scene.cameras.main.zoomTo(this.baseZoom * 1.04, REWARD_INTRO_MS, 'Sine.Out');
     this.scene.cameras.main.shake(REWARD_INTRO_MS, 0.0018);
+
+    this.pendingTimers.push(this.scene.time.delayedCall(REWARD_INTRO_MS, () => {
+      if (this.state !== 'intro') {
+        return;
+      }
+      this.finishIntroVisuals();
+      onComplete();
+    }));
   }
 
   beginOutro(onComplete: () => void): void {
-    this.killOverlayTweens();
+    this.cancelPending();
     this.state = 'outroGrace';
-    this.stateElapsedMs = 0;
     this.timeScale = 0;
     this.invulnerable = true;
     this.movementBlocked = true;
-    this.outroCallback = onComplete;
     this.baseZoom = this.scene.cameras.main.zoom;
     this.ensureOverlay().setAlpha(0.42);
     this.scene.cameras.main.setZoom(this.baseZoom * 1.02);
-  }
 
-  update(delta: number): void {
-    if (this.state === 'idle') {
-      return;
-    }
-
-    this.stateElapsedMs += delta;
-
-    if (this.state === 'intro' && this.stateElapsedMs >= REWARD_INTRO_MS) {
-      this.finishIntro();
-      return;
-    }
-
-    if (this.state === 'outroGrace' && this.stateElapsedMs >= REWARD_OUTRO_GRACE_MS) {
+    this.pendingTimers.push(this.scene.time.delayedCall(REWARD_OUTRO_GRACE_MS, () => {
+      if (this.state !== 'outroGrace') {
+        return;
+      }
       this.state = 'outroEase';
-      this.stateElapsedMs = 0;
       this.movementBlocked = false;
       this.timeScale = OUTRO_EASE_START_SCALE;
-      return;
-    }
-
-    if (this.state === 'outroEase') {
-      const progress = Phaser.Math.Clamp(this.stateElapsedMs / REWARD_OUTRO_EASE_MS, 0, 1);
-      this.timeScale = Phaser.Math.Linear(OUTRO_EASE_START_SCALE, 1, progress);
-      this.overlay?.setAlpha(Phaser.Math.Linear(0.42, 0, progress));
-      this.scene.cameras.main.setZoom(Phaser.Math.Linear(this.baseZoom * 1.02, this.baseZoom, progress));
-
-      if (this.stateElapsedMs >= REWARD_OUTRO_EASE_MS) {
-        this.finishOutro();
-      }
-    }
+      this.startOutroEase(onComplete);
+    }));
   }
 
-  private finishIntro(): void {
+  private startOutroEase(onComplete: () => void): void {
+    const easeState = { scale: OUTRO_EASE_START_SCALE, alpha: 0.42 };
+    this.pendingTweens.push(this.scene.tweens.add({
+      targets: easeState,
+      scale: 1,
+      alpha: 0,
+      duration: REWARD_OUTRO_EASE_MS,
+      ease: 'Sine.Out',
+      onUpdate: () => {
+        this.timeScale = easeState.scale;
+        this.overlay?.setAlpha(easeState.alpha);
+        this.scene.cameras.main.setZoom(Phaser.Math.Linear(this.baseZoom * 1.02, this.baseZoom, easeState.scale));
+      },
+      onComplete: () => {
+        if (this.state !== 'outroEase') {
+          return;
+        }
+        this.resetState();
+        onComplete();
+      },
+    }));
+  }
+
+  private finishIntroVisuals(): void {
+    this.fadeOutOverlay(80);
+    this.scene.cameras.main.zoomTo(this.baseZoom, 80, 'Sine.Out');
     this.state = 'idle';
     this.timeScale = 1;
     this.invulnerable = false;
-    this.fadeOutOverlay(80);
-    this.scene.cameras.main.zoomTo(this.baseZoom, 80, 'Sine.Out');
-    const callback = this.introCallback;
-    this.introCallback = undefined;
-    callback?.();
-  }
-
-  private finishOutro(): void {
-    this.resetState();
-    const callback = this.outroCallback;
-    this.outroCallback = undefined;
-    callback?.();
+    this.movementBlocked = false;
   }
 
   private resetState(): void {
     this.state = 'idle';
-    this.stateElapsedMs = 0;
     this.timeScale = 1;
     this.invulnerable = false;
     this.movementBlocked = false;
     this.overlay?.setAlpha(0);
     if (this.scene.cameras?.main) {
-      this.scene.cameras.main.setZoom(this.baseZoom);
+      this.scene.cameras.main.setZoom(this.baseZoom || 1);
     }
+  }
+
+  private cancelPending(): void {
+    for (const timer of this.pendingTimers) {
+      timer.remove(false);
+    }
+    this.pendingTimers = [];
+    for (const tween of this.pendingTweens) {
+      tween.stop();
+    }
+    this.pendingTweens = [];
+    this.killOverlayTweens();
   }
 
   private ensureOverlay(): Phaser.GameObjects.Rectangle {
@@ -158,12 +168,12 @@ export class RewardMomentSystem {
     if (!this.overlay) {
       return;
     }
-    this.scene.tweens.add({
+    this.pendingTweens.push(this.scene.tweens.add({
       targets: this.overlay,
       alpha: 0,
       duration,
       ease: 'Sine.Out',
-    });
+    }));
   }
 
   private killOverlayTweens(): void {
