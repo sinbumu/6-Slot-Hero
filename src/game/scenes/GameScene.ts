@@ -1955,16 +1955,16 @@ export class GameScene extends Phaser.Scene {
       .setInteractive();
     const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, s(318), s(376), 0x16111e)
       .setStrokeStyle(s(2), 0xf0c85a);
-    const title = this.add.text(GAME_WIDTH / 2, s(154), story.title, {
+    const title = this.add.text(GAME_WIDTH / 2, s(158), story.title, {
       fontSize: sf(20),
       color: '#f8ddb0',
-    }).setOrigin(0.5);
-    const body = this.add.text(s(42), s(198), story.lines.join('\n\n'), {
+    }).setOrigin(0.5, 0.5);
+    const body = this.add.text(s(42), s(204), story.lines.join('\n\n'), {
       fontSize: sf(13),
       color: '#ffffff',
-      lineSpacing: s(7),
+      lineSpacing: s(10),
       wordWrap: { width: s(278) },
-    });
+    }).setOrigin(0, 0);
     const nextButton = this.add.rectangle(GAME_WIDTH / 2, s(450), s(154), s(36), 0x26314a)
       .setStrokeStyle(s(2), 0xf0c85a)
       .setInteractive({ useHandCursor: true });

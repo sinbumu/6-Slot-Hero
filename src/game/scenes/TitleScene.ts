@@ -12,7 +12,7 @@ export class TitleScene extends Phaser.Scene {
     playBgm(this, 'main_title');
     this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x09080d).setOrigin(0);
     this.add.text(GAME_WIDTH / 2, s(164), '6-Slot Hero', {
-      fontFamily: 'Georgia, serif',
+      fontFamily: 'Georgia, "Noto Serif KR", serif',
       fontSize: sf(38),
       color: '#f8ddb0',
       stroke: '#3a1d12',
