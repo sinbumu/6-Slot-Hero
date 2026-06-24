@@ -93,6 +93,7 @@ interface SupportSkillStats {
   dotDurationMs: number;
   slowPercent: number;
   shieldAmount: number;
+  shieldDurationMs: number;
   skillKind: SkillKind;
   tags: readonly Tag[];
 }
@@ -147,6 +148,14 @@ const MAX_POISON_STACKS = 5;
 const POISON_TICK_MS = 500;
 const POISON_DOT_FALLBACK_DURATION_MS = 3200;
 const ECHO_ATTACK_DELAY_MS = 80;
+const SYNERGY_DAMAGE_BONUS_PER_TAG = 0.04;
+const SYNERGY_DAMAGE_BONUS_CAP = 0.16;
+const SHIELD_BREAK_EXPLOSION_DAMAGE_SCALE = 0.55;
+const SHIELD_CAST_EXPLOSION_DAMAGE_SCALE = 0.45;
+const ORBIT_TICK_RATE_MIN = 0.75;
+const ORBIT_TICK_RATE_MAX = 1.05;
+const SYNERGY_IGNORED_TAGS = new Set<Tag>(['mainAttack', 'supportSkill', 'defense']);
+const ORBIT_COOLDOWN_TAGS = new Set<Tag>(['melee', 'physical', 'projectile']);
 
 const TAG_ICON_CONFIG: Record<Tag, { label: string; color: number; priority: number }> = {
   mainAttack: { label: '⚔ MAIN', color: 0xff7070, priority: 10 },
@@ -248,6 +257,9 @@ export class GameScene extends Phaser.Scene {
   private bossGauge = 0;
   private shieldHp = 0;
   private shieldMaxHp = 0;
+  private shieldExpiresAtMs = 0;
+  private shieldBreakDamage = 0;
+  private shieldBreakExplosionRadius = s(34);
   private shieldRing?: Phaser.GameObjects.Arc;
   private kills = 0;
   private killsSinceLastChest = 0;
@@ -284,6 +296,9 @@ export class GameScene extends Phaser.Scene {
     this.bossGauge = 0;
     this.shieldHp = 0;
     this.shieldMaxHp = 0;
+    this.shieldExpiresAtMs = 0;
+    this.shieldBreakDamage = 0;
+    this.shieldBreakExplosionRadius = s(34);
     this.shieldRing = undefined;
     this.kills = 0;
     this.killsSinceLastChest = 0;
@@ -366,6 +381,8 @@ export class GameScene extends Phaser.Scene {
     this.updateBossProjectiles(gameplayDelta);
     this.updateHazards(gameplayDelta);
     this.updatePoisonDebuffs(gameplayDelta);
+    this.updatePlayerRegen(gameplayDelta);
+    this.updateShieldExpiry();
     if (!this.rewardMoment?.isOutroActive()) {
       this.updateChestPickup();
     }
@@ -775,7 +792,7 @@ export class GameScene extends Phaser.Scene {
     playSound('weapon_orbit', this);
     this.drawPoisonTrail(chakram);
     const hitTimer = this.time.addEvent({
-      delay: 28,
+      delay: Math.round(28 * this.getOrbitTickRateMultiplier()),
       repeat: 14,
       callback: () => {
         if (!chakram.active || hitTargetIds.size >= maxHits) {
@@ -866,8 +883,38 @@ export class GameScene extends Phaser.Scene {
       }
       playSound('necklace_thunder', this);
       this.drawLightningSpark(x, y);
+      const baseDamage = this.rollSupportDamage(stats);
+      const hitIds = new Set<string>();
       for (const hitTarget of this.findCombatTargetsInRadius(x, y, stats.radius)) {
-        this.damageCombatTarget(hitTarget, this.rollSupportDamage(stats), 0xffef6a);
+        hitIds.add(this.getCombatTargetId(hitTarget));
+        this.damageCombatTarget(hitTarget, baseDamage, 0xffef6a);
+      }
+      const chainCount = Math.max(1, Math.floor(this.getEquippedOptionTotal('chainCount')));
+      let fromPos = { x, y };
+      for (let chainIndex = 1; chainIndex < chainCount; chainIndex += 1) {
+        let nearest: CombatTarget | undefined;
+        let nearestDistanceSq = s(96) * s(96);
+        for (const candidate of this.findCombatTargetsInRadius(fromPos.x, fromPos.y, s(96))) {
+          const candidateId = this.getCombatTargetId(candidate);
+          if (hitIds.has(candidateId)) {
+            continue;
+          }
+          const candidatePos = this.getTargetPosition(candidate);
+          const distanceSq = Phaser.Math.Distance.Squared(fromPos.x, fromPos.y, candidatePos.x, candidatePos.y);
+          if (distanceSq <= nearestDistanceSq) {
+            nearest = candidate;
+            nearestDistanceSq = distanceSq;
+          }
+        }
+        if (!nearest) {
+          break;
+        }
+        const to = this.getTargetPosition(nearest);
+        this.drawLightningLine(fromPos.x, fromPos.y, to.x, to.y);
+        this.drawLightningSpark(to.x, to.y);
+        this.damageCombatTarget(nearest, baseDamage * 0.72, 0x82d8ff);
+        hitIds.add(this.getCombatTargetId(nearest));
+        fromPos = to;
       }
     });
     return true;
@@ -880,6 +927,9 @@ export class GameScene extends Phaser.Scene {
 
     this.shieldMaxHp = Math.max(this.shieldMaxHp, stats.shieldAmount);
     this.shieldHp = Math.min(this.shieldMaxHp, this.shieldHp + stats.shieldAmount);
+    this.shieldExpiresAtMs = this.elapsedMs + stats.shieldDurationMs;
+    this.shieldBreakDamage = this.rollSupportDamage(stats);
+    this.shieldBreakExplosionRadius = Math.max(s(34), stats.radius * 0.7);
     this.shieldRing?.destroy();
     this.shieldRing = this.add.circle(this.player.x, this.player.y, s(22), 0x8ed6ff, 0.14)
       .setStrokeStyle(s(2), 0x8ed6ff, 0.9)
@@ -893,7 +943,12 @@ export class GameScene extends Phaser.Scene {
       duration: 240,
       yoyo: true,
     });
-    this.explodeAt(this.player.x, this.player.y, Math.max(s(34), stats.radius * 0.7), this.rollSupportDamage(stats) * 0.45);
+    this.explodeAt(
+      this.player.x,
+      this.player.y,
+      this.shieldBreakExplosionRadius,
+      this.shieldBreakDamage * SHIELD_CAST_EXPLOSION_DAMAGE_SCALE,
+    );
     return true;
   }
 
@@ -1382,7 +1437,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   private rollMainDamage(attackStats: MainAttackStats, damageScale = 1): number {
-    let damage = Phaser.Math.FloatBetween(attackStats.minDamage, attackStats.maxDamage) * attackStats.damageMultiplier * damageScale;
+    const weapon = getSaveData().equipped.weapon;
+    const weaponTags = weapon?.tags ?? ['mainAttack', 'melee', 'physical'];
+    const beltBonus = this.getBeltFlatDamageBonus(weaponTags);
+    let damage = Phaser.Math.FloatBetween(
+      attackStats.minDamage + beltBonus.min,
+      attackStats.maxDamage + beltBonus.max,
+    ) * attackStats.damageMultiplier * damageScale;
     const critChance = Phaser.Math.Clamp(this.getEquippedOptionTotal('critChance'), 0, 0.55);
     if (Math.random() < critChance) {
       damage *= this.getMultiplierProduct('critDamageMultiplier');
@@ -1391,7 +1452,45 @@ export class GameScene extends Phaser.Scene {
   }
 
   private rollSupportDamage(stats: SupportSkillStats): number {
-    return Phaser.Math.FloatBetween(stats.minDamage, stats.maxDamage) * this.getSupportDamageMultiplier(stats.tags);
+    const beltBonus = this.getBeltFlatDamageBonus(stats.tags);
+    return Phaser.Math.FloatBetween(
+      stats.minDamage + beltBonus.min,
+      stats.maxDamage + beltBonus.max,
+    ) * this.getSupportDamageMultiplier(stats.tags);
+  }
+
+  private updatePlayerRegen(delta: number): void {
+    const regenPerSec = this.getEquippedOptionTotal('hpRegenPerSec');
+    if (regenPerSec <= 0 || this.playerHp >= this.playerMaxHp) {
+      return;
+    }
+    this.playerHp = Math.min(this.playerMaxHp, this.playerHp + (regenPerSec * delta) / 1000);
+  }
+
+  private updateShieldExpiry(): void {
+    if (this.shieldHp <= 0 || this.shieldExpiresAtMs <= 0) {
+      return;
+    }
+    if (this.elapsedMs >= this.shieldExpiresAtMs) {
+      this.shieldHp = 0;
+      this.shieldExpiresAtMs = 0;
+      this.shieldRing?.destroy();
+      this.shieldRing = undefined;
+    }
+  }
+
+  private triggerShieldBreakShockwave(): void {
+    if (!this.player || this.shieldBreakDamage <= 0) {
+      return;
+    }
+    this.explodeAt(
+      this.player.x,
+      this.player.y,
+      this.shieldBreakExplosionRadius,
+      this.shieldBreakDamage * SHIELD_BREAK_EXPLOSION_DAMAGE_SCALE,
+    );
+    playSound('necklace_shield', this);
+    this.shieldBreakDamage = 0;
   }
 
   private drawMeleeSlash(fromX: number, fromY: number, toX: number, toY: number, range: number): void {
@@ -1641,6 +1740,8 @@ export class GameScene extends Phaser.Scene {
       if (this.shieldHp <= 0) {
         this.shieldRing?.destroy();
         this.shieldRing = undefined;
+        this.shieldExpiresAtMs = 0;
+        this.triggerShieldBreakShockwave();
       }
     }
     this.playerHp = Math.max(0, this.playerHp - incomingDamage);
@@ -2558,14 +2659,18 @@ export class GameScene extends Phaser.Scene {
   private getMainAttackStats(): MainAttackStats {
     const save = getSaveData();
     const weapon = save.equipped.weapon;
+    const weaponTags = weapon?.tags ?? ['mainAttack', 'melee', 'physical'];
     const skillKind = weapon?.skillKind ?? 'bareFist';
     const minDamage = weapon?.rolledOptions.baseDamageMin ?? 6;
     const maxDamage = weapon?.rolledOptions.baseDamageMax ?? 9;
     const baseCooldown = weapon?.rolledOptions.cooldownMs ?? BARE_FIST_COOLDOWN_MS;
     const baseRange = this.getBaseRangeForSkill(skillKind);
     const range = baseRange * this.getMultiplierProduct('meleeRangeMultiplier');
-    const cooldown = baseCooldown * this.getMultiplierProduct('mainCooldownMultiplier');
-    const damageMultiplier = this.getTaggedDamageMultiplier(weapon?.tags ?? ['mainAttack', 'melee', 'physical']);
+    let cooldown = baseCooldown * this.getMultiplierProduct('mainCooldownMultiplier');
+    if (weaponTags.some((tag) => ORBIT_COOLDOWN_TAGS.has(tag))) {
+      cooldown *= this.getOrbitTickRateMultiplier();
+    }
+    const damageMultiplier = this.getTaggedDamageMultiplier(weaponTags);
     const radius = s(weapon?.rolledOptions.radiusPx ?? 44) * this.getMultiplierProduct('areaRadiusMultiplier');
     const chainCount = Math.max(1, this.getEquippedOptionTotal('chainCount'));
     const pierceCount = weapon?.rolledOptions.pierceCount ?? 2;
@@ -2591,7 +2696,9 @@ export class GameScene extends Phaser.Scene {
     const dotDurationBonus = this.getEquippedOptionTotal('dotDurationMs') - (necklace.rolledOptions.dotDurationMs ?? 0);
     const slowBonus = this.getEquippedOptionTotal('slowPercent') - (necklace.rolledOptions.slowPercent ?? 0);
     const shieldBonus = this.getEquippedOptionTotal('shieldAmount') - (necklace.rolledOptions.shieldAmount ?? 0);
+    const shieldDurationBonus = this.getEquippedOptionTotal('shieldDurationMs') - (necklace.rolledOptions.shieldDurationMs ?? 0);
     const dotDuration = (necklace.rolledOptions.dotDurationMs ?? 2800) + dotDurationBonus;
+    const shieldDuration = (necklace.rolledOptions.shieldDurationMs ?? 2800) + shieldDurationBonus;
     return {
       minDamage: necklace.rolledOptions.baseDamageMin ?? 6,
       maxDamage: necklace.rolledOptions.baseDamageMax ?? 12,
@@ -2601,6 +2708,7 @@ export class GameScene extends Phaser.Scene {
       dotDurationMs: Phaser.Math.Clamp(dotDuration, 600, 9000),
       slowPercent: Phaser.Math.Clamp((necklace.rolledOptions.slowPercent ?? 0) + slowBonus, 0, 0.75),
       shieldAmount: Math.max(0, (necklace.rolledOptions.shieldAmount ?? 0) + shieldBonus),
+      shieldDurationMs: Phaser.Math.Clamp(shieldDuration, 800, 12000),
       skillKind: necklace.skillKind,
       tags: necklace.tags,
     };
@@ -2619,7 +2727,7 @@ export class GameScene extends Phaser.Scene {
     return BARE_FIST_RANGE;
   }
 
-  private getTaggedDamageMultiplier(tags: readonly string[]): number {
+  private getTaggedDamageMultiplier(tags: readonly Tag[]): number {
     let multiplier = this.getMultiplierProduct('mainDamageMultiplier');
     if (tags.includes('fire')) {
       multiplier *= this.getMultiplierProduct('fireDamageMultiplier');
@@ -2636,10 +2744,10 @@ export class GameScene extends Phaser.Scene {
     if (tags.includes('physical')) {
       multiplier *= this.getMultiplierProduct('physicalDamageMultiplier');
     }
-    return multiplier;
+    return multiplier * this.getSynergyDamageMultiplier(tags);
   }
 
-  private getSupportDamageMultiplier(tags: readonly string[]): number {
+  private getSupportDamageMultiplier(tags: readonly Tag[]): number {
     let multiplier = this.getMultiplierProduct('supportDamageMultiplier');
     if (tags.includes('fire')) {
       multiplier *= this.getMultiplierProduct('fireDamageMultiplier');
@@ -2656,7 +2764,7 @@ export class GameScene extends Phaser.Scene {
     if (tags.includes('physical')) {
       multiplier *= this.getMultiplierProduct('physicalDamageMultiplier');
     }
-    return multiplier;
+    return multiplier * this.getSynergyDamageMultiplier(tags);
   }
 
   private calculatePlayerMaxHp(): number {
@@ -2664,6 +2772,14 @@ export class GameScene extends Phaser.Scene {
   }
 
   private getMultiplierProduct(key: keyof RolledEquipment['rolledOptions']): number {
+    const product = this.getRawMultiplierProduct(key);
+    if (key === 'armorAmplifyMultiplier' || !String(key).endsWith('Multiplier')) {
+      return product;
+    }
+    return product * this.getArmorAmplifyProduct();
+  }
+
+  private getRawMultiplierProduct(key: keyof RolledEquipment['rolledOptions']): number {
     let product = 1;
     for (const item of Object.values(getSaveData().equipped)) {
       const value = item?.rolledOptions[key];
@@ -2672,6 +2788,65 @@ export class GameScene extends Phaser.Scene {
       }
     }
     return product;
+  }
+
+  private getArmorAmplifyProduct(): number {
+    const armor = getSaveData().equipped.armor;
+    const value = armor?.rolledOptions.armorAmplifyMultiplier;
+    return typeof value === 'number' ? value : 1;
+  }
+
+  private getOrbitTickRateMultiplier(): number {
+    return Phaser.Math.Clamp(
+      this.getMultiplierProduct('orbitTickRateMultiplier'),
+      ORBIT_TICK_RATE_MIN,
+      ORBIT_TICK_RATE_MAX,
+    );
+  }
+
+  private getBeltFlatDamageBonus(skillTags: readonly Tag[]): { min: number; max: number } {
+    const belt = getSaveData().equipped.belt;
+    if (!belt) {
+      return { min: 0, max: 0 };
+    }
+    const matches = belt.tags.some((tag) => skillTags.includes(tag));
+    if (!matches) {
+      return { min: 0, max: 0 };
+    }
+    return {
+      min: belt.rolledOptions.baseDamageMin ?? 0,
+      max: belt.rolledOptions.baseDamageMax ?? 0,
+    };
+  }
+
+  private getActiveSynergyTags(): Tag[] {
+    const tagCounts = new Map<Tag, number>();
+    for (const item of Object.values(getSaveData().equipped)) {
+      if (!item) {
+        continue;
+      }
+      for (const tag of item.tags) {
+        if (SYNERGY_IGNORED_TAGS.has(tag)) {
+          continue;
+        }
+        tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+      }
+    }
+    return [...tagCounts.entries()]
+      .filter(([, count]) => count >= 2)
+      .map(([tag]) => tag)
+      .slice(0, 4);
+  }
+
+  private getSynergyDamageMultiplier(skillTags: readonly Tag[]): number {
+    const activeTags = new Set(this.getActiveSynergyTags());
+    let matchingTags = 0;
+    for (const tag of skillTags) {
+      if (activeTags.has(tag)) {
+        matchingTags += 1;
+      }
+    }
+    return 1 + Math.min(SYNERGY_DAMAGE_BONUS_CAP, matchingTags * SYNERGY_DAMAGE_BONUS_PER_TAG);
   }
 
   private getEquippedOptionTotal(key: keyof RolledEquipment['rolledOptions']): number {
@@ -2801,20 +2976,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   private getSynergySummary(): string {
-    const equipped = Object.values(getSaveData().equipped).filter((item): item is RolledEquipment => Boolean(item));
-    const tagCounts = new Map<string, number>();
-    for (const item of equipped) {
-      for (const tag of item.tags) {
-        tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
-      }
+    const activeTags = this.getActiveSynergyTags();
+    if (activeTags.length === 0) {
+      return 'Synergy: None yet';
     }
-
-    const activeTags = [...tagCounts.entries()]
-      .filter(([tag, count]) => count >= 2 && tag !== 'mainAttack' && tag !== 'supportSkill' && tag !== 'defense')
-      .map(([tag]) => tag)
-      .slice(0, 4);
-
-    return `Synergy: ${activeTags.length > 0 ? activeTags.join(', ') : 'None yet'}`;
+    const bonusPercent = Math.round(Math.min(SYNERGY_DAMAGE_BONUS_CAP, activeTags.length * SYNERGY_DAMAGE_BONUS_PER_TAG) * 100);
+    return `Synergy: ${activeTags.join(', ')} (+${bonusPercent}%)`;
   }
 
   private formatEquipmentInfo(item: RolledEquipment): string {
