@@ -807,7 +807,10 @@ export class GameScene extends Phaser.Scene {
           hitTargetIds.add(targetId);
           const { x, y } = this.getTargetPosition(target);
           this.damageCombatTarget(target, this.rollMainDamage(attackStats, damageScale) * 0.82, 0x74ff83);
-          this.applyPoisonStack(target);
+          const chakramStackDps = this.getChakramPoisonStackDps();
+          if (chakramStackDps > 0) {
+            this.applyPoisonStack(target, chakramStackDps, this.getChakramPoisonDurationMs());
+          }
           this.addPoisonTickText(x, y);
           if (hitTargetIds.size >= maxHits) {
             break;
@@ -1286,7 +1289,8 @@ export class GameScene extends Phaser.Scene {
       if (hazard.tickMs <= 0 && hazard.target === 'enemies') {
         for (const target of this.findCombatTargetsInRadius(hazard.x, hazard.y, hazard.radius)) {
           const position = this.getTargetPosition(target);
-          this.applyPoisonStack(target, hazard.poisonDpsPerStack);
+          const tickDamage = Math.max(1, hazard.poisonDpsPerStack * 0.5);
+          this.damageCombatTargetPoison(target, tickDamage);
           this.addPoisonTickText(position.x, position.y);
         }
         hazard.tickMs = POISON_TICK_MS;
@@ -1371,23 +1375,72 @@ export class GameScene extends Phaser.Scene {
     return enemy ? { kind: 'enemy', enemy } : undefined;
   }
 
-  private getTotalPoisonDotDps(): number {
-    const total = this.getEquippedOptionTotal('dotDamagePerSec') * this.getMultiplierProduct('poisonDamageMultiplier');
-    return Math.max(0, total);
+  private getChakramPoisonStackDps(): number {
+    const weapon = getSaveData().equipped.weapon;
+    if (!weapon || weapon.skillKind !== 'returningPoisonProjectile') {
+      return 0;
+    }
+
+    const weaponDot = weapon.rolledOptions.dotDamagePerSec ?? 0;
+    if (weaponDot <= 0) {
+      return 0;
+    }
+
+    let passiveDot = 0;
+    for (const [slot, item] of Object.entries(getSaveData().equipped)) {
+      if (!item || slot === 'weapon' || slot === 'necklace') {
+        continue;
+      }
+      passiveDot += item.rolledOptions.dotDamagePerSec ?? 0;
+    }
+
+    const baseDps = weaponDot + passiveDot;
+    const multiplier = this.getRawMultiplierProduct('poisonDamageMultiplier')
+      * this.getArmorAmplifyProduct()
+      * this.getSynergyDamageMultiplier(weapon.tags);
+    return Math.max(0, baseDps * multiplier);
   }
 
-  private getPoisonDotDurationMs(): number {
-    const bonusDuration = this.getEquippedOptionTotal('dotDurationMs');
-    return Phaser.Math.Clamp(bonusDuration > 0 ? bonusDuration : POISON_DOT_FALLBACK_DURATION_MS, 1200, 12000);
+  private getChakramPoisonDurationMs(): number {
+    let bonusDuration = 0;
+    for (const [slot, item] of Object.entries(getSaveData().equipped)) {
+      if (!item || slot === 'necklace') {
+        continue;
+      }
+      bonusDuration += item.rolledOptions.dotDurationMs ?? 0;
+    }
+    return Phaser.Math.Clamp(
+      bonusDuration > 0 ? bonusDuration : POISON_DOT_FALLBACK_DURATION_MS,
+      1200,
+      12000,
+    );
   }
 
-  private applyPoisonStack(target: CombatTarget, dpsPerStack?: number, durationMs?: number): void {
-    const stackDps = Math.max(0.5, dpsPerStack ?? this.getTotalPoisonDotDps());
+  private getPoisonPoolDotDps(necklace: RolledEquipment): number {
+    const necklaceDot = necklace.rolledOptions.dotDamagePerSec ?? 2;
+    let passiveDot = 0;
+    for (const [slot, item] of Object.entries(getSaveData().equipped)) {
+      if (!item || slot === 'weapon' || slot === 'necklace') {
+        continue;
+      }
+      passiveDot += item.rolledOptions.dotDamagePerSec ?? 0;
+    }
+
+    const baseDps = necklaceDot + passiveDot;
+    const multiplier = this.getRawMultiplierProduct('poisonDamageMultiplier')
+      * this.getRawMultiplierProduct('supportDamageMultiplier')
+      * this.getArmorAmplifyProduct()
+      * this.getSynergyDamageMultiplier(necklace.tags);
+    return Math.max(1, baseDps * multiplier);
+  }
+
+  private applyPoisonStack(target: CombatTarget, dpsPerStack: number, durationMs: number): void {
+    const stackDps = Math.max(0.5, dpsPerStack);
     if (stackDps <= 0) {
       return;
     }
 
-    const stackDuration = durationMs ?? this.getPoisonDotDurationMs();
+    const stackDuration = durationMs;
     const id = this.getCombatTargetId(target);
     const existing = this.poisonDebuffs.get(id);
     if (existing) {
@@ -2154,8 +2207,12 @@ export class GameScene extends Phaser.Scene {
       };
     });
     this.equippedCount = Object.keys(getSaveData().equipped).length;
+    const previousMaxHp = this.playerMaxHp;
     this.playerMaxHp = this.calculatePlayerMaxHp();
-    this.playerHp = Math.min(this.playerMaxHp, this.playerHp + this.getEquippedOptionTotal('maxHpBonus'));
+    const maxHpGain = this.playerMaxHp - previousMaxHp;
+    if (maxHpGain > 0) {
+      this.playerHp = Math.min(this.playerMaxHp, this.playerHp + maxHpGain);
+    }
     playSound('equip', this);
     this.refreshEquipmentPanel();
     if (shouldClearStage) {
@@ -2704,7 +2761,9 @@ export class GameScene extends Phaser.Scene {
       maxDamage: necklace.rolledOptions.baseDamageMax ?? 12,
       cooldownMs: Phaser.Math.Clamp(cooldown, 900, 9000),
       radius: Phaser.Math.Clamp(radius, s(28), s(130)),
-      dotDamagePerSec: Math.max(1, this.getEquippedOptionTotal('dotDamagePerSec') * this.getSupportDamageMultiplier(necklace.tags)),
+      dotDamagePerSec: necklace.skillKind === 'poisonPool'
+        ? this.getPoisonPoolDotDps(necklace)
+        : Math.max(0, necklace.rolledOptions.dotDamagePerSec ?? 0),
       dotDurationMs: Phaser.Math.Clamp(dotDuration, 600, 9000),
       slowPercent: Phaser.Math.Clamp((necklace.rolledOptions.slowPercent ?? 0) + slowBonus, 0, 0.75),
       shieldAmount: Math.max(0, (necklace.rolledOptions.shieldAmount ?? 0) + shieldBonus),
@@ -2728,42 +2787,54 @@ export class GameScene extends Phaser.Scene {
   }
 
   private getTaggedDamageMultiplier(tags: readonly Tag[]): number {
-    let multiplier = this.getMultiplierProduct('mainDamageMultiplier');
+    const multiplierKeys: Array<keyof RolledEquipment['rolledOptions']> = ['mainDamageMultiplier'];
     if (tags.includes('fire')) {
-      multiplier *= this.getMultiplierProduct('fireDamageMultiplier');
+      multiplierKeys.push('fireDamageMultiplier');
     }
     if (tags.includes('ice')) {
-      multiplier *= this.getMultiplierProduct('iceDamageMultiplier');
+      multiplierKeys.push('iceDamageMultiplier');
     }
     if (tags.includes('lightning')) {
-      multiplier *= this.getMultiplierProduct('lightningDamageMultiplier');
+      multiplierKeys.push('lightningDamageMultiplier');
     }
     if (tags.includes('poison')) {
-      multiplier *= this.getMultiplierProduct('poisonDamageMultiplier');
+      multiplierKeys.push('poisonDamageMultiplier');
     }
     if (tags.includes('physical')) {
-      multiplier *= this.getMultiplierProduct('physicalDamageMultiplier');
+      multiplierKeys.push('physicalDamageMultiplier');
     }
+
+    let multiplier = 1;
+    for (const key of multiplierKeys) {
+      multiplier *= this.getRawMultiplierProduct(key);
+    }
+    multiplier *= this.getArmorAmplifyProduct();
     return multiplier * this.getSynergyDamageMultiplier(tags);
   }
 
   private getSupportDamageMultiplier(tags: readonly Tag[]): number {
-    let multiplier = this.getMultiplierProduct('supportDamageMultiplier');
+    const multiplierKeys: Array<keyof RolledEquipment['rolledOptions']> = ['supportDamageMultiplier'];
     if (tags.includes('fire')) {
-      multiplier *= this.getMultiplierProduct('fireDamageMultiplier');
+      multiplierKeys.push('fireDamageMultiplier');
     }
     if (tags.includes('ice')) {
-      multiplier *= this.getMultiplierProduct('iceDamageMultiplier');
+      multiplierKeys.push('iceDamageMultiplier');
     }
     if (tags.includes('lightning')) {
-      multiplier *= this.getMultiplierProduct('lightningDamageMultiplier');
+      multiplierKeys.push('lightningDamageMultiplier');
     }
     if (tags.includes('poison')) {
-      multiplier *= this.getMultiplierProduct('poisonDamageMultiplier');
+      multiplierKeys.push('poisonDamageMultiplier');
     }
     if (tags.includes('physical')) {
-      multiplier *= this.getMultiplierProduct('physicalDamageMultiplier');
+      multiplierKeys.push('physicalDamageMultiplier');
     }
+
+    let multiplier = 1;
+    for (const key of multiplierKeys) {
+      multiplier *= this.getRawMultiplierProduct(key);
+    }
+    multiplier *= this.getArmorAmplifyProduct();
     return multiplier * this.getSynergyDamageMultiplier(tags);
   }
 
@@ -2980,8 +3051,9 @@ export class GameScene extends Phaser.Scene {
     if (activeTags.length === 0) {
       return 'Synergy: None yet';
     }
-    const bonusPercent = Math.round(Math.min(SYNERGY_DAMAGE_BONUS_CAP, activeTags.length * SYNERGY_DAMAGE_BONUS_PER_TAG) * 100);
-    return `Synergy: ${activeTags.join(', ')} (+${bonusPercent}%)`;
+    const perTagPercent = Math.round(SYNERGY_DAMAGE_BONUS_PER_TAG * 100);
+    const maxPercent = Math.round(SYNERGY_DAMAGE_BONUS_CAP * 100);
+    return `Synergy: ${activeTags.join(', ')} · +${perTagPercent}%/match (max ${maxPercent}%)`;
   }
 
   private formatEquipmentInfo(item: RolledEquipment): string {

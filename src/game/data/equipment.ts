@@ -81,7 +81,7 @@ export const NECKLACE_DEFS: EquipmentDef[] = [
     slot: 'necklace',
     tags: ['supportSkill', 'shield', 'defense'],
     skillKind: 'shieldPulse',
-    playerDescription: '일정 주기마다 보호막을 얻고, 보호막이 깨질 때 충격파를 냅니다.',
+    playerDescription: '일정 주기마다 보호막을 얻습니다. 시전 시 약한 충격파, 보호막이 깨질 때 강한 충격파.',
     basePower: 14,
     optionRolls: [option('shieldAmount', 18, 34), option('shieldDurationMs', 2200, 3600), option('cooldownMs', 4600, 6200), option('baseDamageMin', 6, 12), option('baseDamageMax', 14, 24)],
   }),
@@ -113,7 +113,6 @@ export const HELMET_DEFS: EquipmentDef[] = [
   makePassive('helmet_ember_crown', '잿불투구', 'Ember Crown', 'helmet', ['fire', 'area'], '화염 스킬의 피해와 폭발 범위가 증가합니다.', 11, [
     option('fireDamageMultiplier', 1.12, 1.35),
     option('areaRadiusMultiplier', 1.08, 1.28),
-    option('dotDamagePerSec', 1, 3),
   ]),
   makePassive('helmet_storm_crown', '폭풍관', 'Storm Crown', 'helmet', ['lightning'], '번개 스킬의 피해와 연쇄 성능이 증가합니다.', 11, [
     option('lightningDamageMultiplier', 1.1, 1.32),
@@ -174,7 +173,7 @@ export const ARMOR_DEFS: EquipmentDef[] = [
     option('damageReductionPercent', 0.02, 0.08),
     option('armorAmplifyMultiplier', 1.02, 1.16),
   ]),
-  makePassive('armor_amplifier_mail', '증폭 사슬갑옷', 'Amplifier Mail', 'armor', ['defense'], '생존력을 얻고 다른 장비 효과 하나를 증폭합니다.', 13, [
+  makePassive('armor_amplifier_mail', '증폭 사슬갑옷', 'Amplifier Mail', 'armor', ['defense'], '생존력을 얻고 다른 장비 패시브 배율을 전체적으로 증폭합니다.', 13, [
     option('maxHpBonus', 8, 24),
     option('damageReductionPercent', 0.02, 0.08),
     option('armorAmplifyMultiplier', 1.15, 1.35),
