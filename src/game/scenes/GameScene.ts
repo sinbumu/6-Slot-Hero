@@ -305,7 +305,10 @@ export class GameScene extends Phaser.Scene {
     this.createEquipmentPanel();
     this.setupInput();
     this.rewardMoment = new RewardMomentSystem(this);
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.rewardMoment?.destroy());
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.rewardMoment?.destroy();
+      this.rewardMoment = undefined;
+    });
     if (!this.sys.game.device.input.touch) {
       this.createButton(GAME_WIDTH / 2, END_TEST_RUN_Y, 'End Test Run', () => {
         this.finishRun(false);
@@ -1919,9 +1922,13 @@ export class GameScene extends Phaser.Scene {
 
   private prepareForRewardModal(): void {
     this.rewardMoment?.cancel();
-    this.tweens.killTweensOf(this.cameras.main);
-    this.cameras.main.setZoom(1);
-    this.cameras.main.resetFX();
+    const camera = this.cameras?.main;
+    if (!camera) {
+      return;
+    }
+    this.tweens.killTweensOf(camera);
+    camera.setZoom(1);
+    camera.resetFX();
   }
 
   private completeStage(): void {
@@ -1937,6 +1944,8 @@ export class GameScene extends Phaser.Scene {
     });
     this.clearModal();
     this.rewardPhase = 'none';
+    this.rewardMoment?.destroy();
+    this.rewardMoment = undefined;
     if (this.stageId === STAGE_COUNT && !getSaveData().tutorial.endingSeen) {
       this.showEndingStoryModal();
       return;

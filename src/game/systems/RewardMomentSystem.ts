@@ -20,13 +20,26 @@ export class RewardMomentSystem {
   constructor(private readonly scene: Phaser.Scene) {}
 
   destroy(): void {
-    this.cancel();
-    this.overlay?.destroy();
+    this.cancelPending();
+    if (this.overlay?.active) {
+      this.overlay.destroy();
+    }
     this.overlay = undefined;
+    this.state = 'idle';
+    this.timeScale = 1;
+    this.invulnerable = false;
+    this.movementBlocked = false;
   }
 
   cancel(): void {
     this.cancelPending();
+    if (!this.isSceneLive()) {
+      this.state = 'idle';
+      this.timeScale = 1;
+      this.invulnerable = false;
+      this.movementBlocked = false;
+      return;
+    }
     this.resetState();
   }
 
@@ -48,16 +61,21 @@ export class RewardMomentSystem {
 
   /** Runs only after a reward modal closes (pick or skip). */
   beginOutro(onComplete: () => void): void {
+    if (!this.isSceneLive()) {
+      onComplete();
+      return;
+    }
+
     this.cancelPending();
     this.state = 'outroGrace';
     this.timeScale = 0;
     this.invulnerable = true;
     this.movementBlocked = true;
-    this.scene.cameras.main.setZoom(1);
-    this.ensureOverlay().setAlpha(0.38);
+    this.scene.cameras.main?.setZoom(1);
+    this.ensureOverlay().setAlpha(0.38).setVisible(true);
 
     this.pendingTimers.push(this.scene.time.delayedCall(REWARD_OUTRO_GRACE_MS, () => {
-      if (this.state !== 'outroGrace') {
+      if (this.state !== 'outroGrace' || !this.isSceneLive()) {
         return;
       }
       this.state = 'outroEase';
@@ -68,6 +86,11 @@ export class RewardMomentSystem {
   }
 
   private startOutroEase(onComplete: () => void): void {
+    if (!this.isSceneLive()) {
+      onComplete();
+      return;
+    }
+
     const easeState = { scale: OUTRO_EASE_START_SCALE, alpha: 0.38 };
     this.pendingTweens.push(this.scene.tweens.add({
       targets: easeState,
@@ -76,6 +99,9 @@ export class RewardMomentSystem {
       duration: REWARD_OUTRO_EASE_MS,
       ease: 'Sine.Out',
       onUpdate: () => {
+        if (!this.isSceneLive()) {
+          return;
+        }
         this.timeScale = easeState.scale;
         this.overlay?.setAlpha(easeState.alpha);
       },
@@ -94,8 +120,12 @@ export class RewardMomentSystem {
     this.timeScale = 1;
     this.invulnerable = false;
     this.movementBlocked = false;
-    this.overlay?.setAlpha(0);
-    this.scene.cameras.main.setZoom(1);
+    this.overlay?.setAlpha(0).setVisible(false);
+    this.scene.cameras.main?.setZoom(1);
+  }
+
+  private isSceneLive(): boolean {
+    return Boolean(this.scene?.sys?.isActive());
   }
 
   private cancelPending(): void {
@@ -107,7 +137,7 @@ export class RewardMomentSystem {
       tween.stop();
     }
     this.pendingTweens = [];
-    if (this.overlay) {
+    if (this.overlay && this.isSceneLive()) {
       this.scene.tweens.killTweensOf(this.overlay);
     }
   }
@@ -117,7 +147,8 @@ export class RewardMomentSystem {
       this.overlay = this.scene.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x140a24, 0)
         .setOrigin(0)
         .setDepth(90)
-        .setScrollFactor(0);
+        .setScrollFactor(0)
+        .setVisible(false);
     }
     return this.overlay;
   }
