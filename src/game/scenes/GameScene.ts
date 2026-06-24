@@ -49,9 +49,17 @@ interface HazardState {
   y: number;
   radius: number;
   damage: number;
+  poisonDpsPerStack: number;
   durationMs: number;
   tickMs: number;
   target: 'player' | 'enemies';
+}
+
+interface PoisonDebuffState {
+  stacks: number;
+  totalDps: number;
+  durationMs: number;
+  tickMs: number;
 }
 
 interface BossProjectileState {
@@ -135,6 +143,10 @@ const BOSS_GAUGE_TIME_PER_SEC = 1.25;
 const BOSS_GAUGE_PER_KILL = 2.2;
 const TAP_MAX_DISTANCE = s(8);
 const TAP_MAX_MS = 200;
+const MAX_POISON_STACKS = 5;
+const POISON_TICK_MS = 500;
+const POISON_DOT_FALLBACK_DURATION_MS = 3200;
+const ECHO_ATTACK_DELAY_MS = 80;
 
 const TAG_ICON_CONFIG: Record<Tag, { label: string; color: number; priority: number }> = {
   mainAttack: { label: '⚔ MAIN', color: 0xff7070, priority: 10 },
@@ -227,6 +239,7 @@ export class GameScene extends Phaser.Scene {
   private chests: ChestState[] = [];
   private boss?: BossState;
   private hazards: HazardState[] = [];
+  private poisonDebuffs = new Map<string, PoisonDebuffState>();
   private bossProjectiles: BossProjectileState[] = [];
   private spawnTimerMs = 0;
   private attackTimerMs = 0;
@@ -249,6 +262,8 @@ export class GameScene extends Phaser.Scene {
   private readonly keyboardMenu = new KeyboardMenuNavigator(this);
   private rewardMoment?: RewardMomentSystem;
   private equipmentInfoBlockedUntilMs = 0;
+  private rewardOverlay?: Phaser.GameObjects.Container;
+  private activeRewardMenuItems: KeyboardMenuItem[] = [];
 
   constructor() {
     super('GameScene');
@@ -260,6 +275,7 @@ export class GameScene extends Phaser.Scene {
     this.chests = [];
     this.boss = undefined;
     this.hazards = [];
+    this.poisonDebuffs.clear();
     this.bossProjectiles = [];
     this.spawnTimerMs = 0;
     this.attackTimerMs = 0;
@@ -349,6 +365,7 @@ export class GameScene extends Phaser.Scene {
     this.updateBoss(gameplayDelta);
     this.updateBossProjectiles(gameplayDelta);
     this.updateHazards(gameplayDelta);
+    this.updatePoisonDebuffs(gameplayDelta);
     if (!this.rewardMoment?.isOutroActive()) {
       this.updateChestPickup();
     }
@@ -630,22 +647,38 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     this.attackTimerMs = attackStats.cooldownMs;
+    this.tryTriggerEchoAttack(attackStats);
   }
 
-  private performMainAttack(attackStats: MainAttackStats): boolean {
+  private tryTriggerEchoAttack(attackStats: MainAttackStats): void {
+    const echoChance = Phaser.Math.Clamp(this.getEquippedOptionTotal('echoChance'), 0, 0.55);
+    if (echoChance <= 0 || Math.random() >= echoChance) {
+      return;
+    }
+
+    const echoScale = Phaser.Math.Clamp(this.getMultiplierProduct('echoDamageMultiplier'), 0.2, 1);
+    this.time.delayedCall(ECHO_ATTACK_DELAY_MS, () => {
+      if (this.isRunOver || !this.player || this.isGameplayPaused()) {
+        return;
+      }
+      this.performMainAttack(attackStats, echoScale);
+    });
+  }
+
+  private performMainAttack(attackStats: MainAttackStats, damageScale = 1): boolean {
     if (attackStats.skillKind === 'lightningStrike') {
-      return this.performLightningAttack(attackStats);
+      return this.performLightningAttack(attackStats, damageScale);
     }
     if (attackStats.skillKind === 'fireProjectileExplosion') {
-      return this.performFireProjectileAttack(attackStats);
+      return this.performFireProjectileAttack(attackStats, damageScale);
     }
     if (attackStats.skillKind === 'returningPoisonProjectile') {
-      return this.performPoisonChakramAttack(attackStats);
+      return this.performPoisonChakramAttack(attackStats, damageScale);
     }
-    return this.performMeleeAttack(attackStats);
+    return this.performMeleeAttack(attackStats, damageScale);
   }
 
-  private performMeleeAttack(attackStats: MainAttackStats): boolean {
+  private performMeleeAttack(attackStats: MainAttackStats, damageScale = 1): boolean {
     const targets = this.findCombatTargetsInRadius(this.player!.x, this.player!.y, attackStats.range)
       .slice(0, attackStats.skillKind === 'slashCone' ? 3 : 1);
     if (targets.length === 0) {
@@ -655,13 +688,13 @@ export class GameScene extends Phaser.Scene {
     for (const target of targets) {
       const { x, y } = this.getTargetPosition(target);
       this.drawMeleeSlash(this.player!.x, this.player!.y, x, y, attackStats.range);
-      this.damageCombatTarget(target, this.rollMainDamage(attackStats), 0xffe0c2);
+      this.damageCombatTarget(target, this.rollMainDamage(attackStats, damageScale), 0xffe0c2);
     }
     playSound('weapon_melee', this);
     return true;
   }
 
-  private performLightningAttack(attackStats: MainAttackStats): boolean {
+  private performLightningAttack(attackStats: MainAttackStats, damageScale = 1): boolean {
     const firstTarget = this.findNearestCombatTarget(attackStats.range + s(48));
     if (!firstTarget) {
       return false;
@@ -683,14 +716,14 @@ export class GameScene extends Phaser.Scene {
       const to = this.getTargetPosition(target);
       this.drawLightningLine(from.x, from.y, to.x, to.y);
       this.drawLightningSpark(to.x, to.y);
-      this.damageCombatTarget(target, this.rollMainDamage(attackStats) * (index === 0 ? 1 : 0.72), 0x82d8ff);
+      this.damageCombatTarget(target, this.rollMainDamage(attackStats, damageScale) * (index === 0 ? 1 : 0.72), 0x82d8ff);
       from = to;
     });
     playSound('weapon_lightning', this);
     return true;
   }
 
-  private performFireProjectileAttack(attackStats: MainAttackStats): boolean {
+  private performFireProjectileAttack(attackStats: MainAttackStats, damageScale = 1): boolean {
     const target = this.findNearestCombatTarget(attackStats.range + s(140));
     if (!target || !this.player) {
       return false;
@@ -712,13 +745,13 @@ export class GameScene extends Phaser.Scene {
       duration,
       onComplete: () => {
         projectile.destroy();
-        this.explodeAt(destination.x, destination.y, attackStats.radius, this.rollMainDamage(attackStats));
+        this.explodeAt(destination.x, destination.y, attackStats.radius, this.rollMainDamage(attackStats, damageScale));
       },
     });
     return true;
   }
 
-  private performPoisonChakramAttack(attackStats: MainAttackStats): boolean {
+  private performPoisonChakramAttack(attackStats: MainAttackStats, damageScale = 1): boolean {
     const firstTarget = this.findNearestCombatTarget(attackStats.range + s(120));
     if (!firstTarget || !this.player) {
       return false;
@@ -756,7 +789,8 @@ export class GameScene extends Phaser.Scene {
           }
           hitTargetIds.add(targetId);
           const { x, y } = this.getTargetPosition(target);
-          this.damageCombatTarget(target, this.rollMainDamage(attackStats) * 0.82, 0x74ff83);
+          this.damageCombatTarget(target, this.rollMainDamage(attackStats, damageScale) * 0.82, 0x74ff83);
+          this.applyPoisonStack(target);
           this.addPoisonTickText(x, y);
           if (hitTargetIds.size >= maxHits) {
             break;
@@ -1150,13 +1184,14 @@ export class GameScene extends Phaser.Scene {
       y,
       radius,
       damage,
+      poisonDpsPerStack: 0,
       durationMs,
       tickMs: 0,
       target: 'player',
     });
   }
 
-  private addEnemyHazard(x: number, y: number, radius: number, damagePerSecond: number, durationMs: number, color: number): void {
+  private addEnemyHazard(x: number, y: number, radius: number, poisonDpsPerStack: number, durationMs: number, color: number): void {
     const shape = this.add.circle(x, y, radius, color, 0.2)
       .setStrokeStyle(s(2), color, 0.85)
       .setDepth(6);
@@ -1166,7 +1201,8 @@ export class GameScene extends Phaser.Scene {
       x,
       y,
       radius,
-      damage: Math.max(1, damagePerSecond * 0.5),
+      damage: 0,
+      poisonDpsPerStack: Math.max(0.5, poisonDpsPerStack),
       durationMs,
       tickMs: 0,
       target: 'enemies',
@@ -1195,10 +1231,10 @@ export class GameScene extends Phaser.Scene {
       if (hazard.tickMs <= 0 && hazard.target === 'enemies') {
         for (const target of this.findCombatTargetsInRadius(hazard.x, hazard.y, hazard.radius)) {
           const position = this.getTargetPosition(target);
-          this.damageCombatTarget(target, hazard.damage, 0x74ff83);
+          this.applyPoisonStack(target, hazard.poisonDpsPerStack);
           this.addPoisonTickText(position.x, position.y);
         }
-        hazard.tickMs = 500;
+        hazard.tickMs = POISON_TICK_MS;
       }
       if (hazard.durationMs <= 0) {
         hazard.shape.destroy();
@@ -1272,8 +1308,81 @@ export class GameScene extends Phaser.Scene {
     return target.kind === 'boss' ? `boss_${target.boss.def.id}` : target.enemy.id;
   }
 
-  private rollMainDamage(attackStats: MainAttackStats): number {
-    let damage = Phaser.Math.FloatBetween(attackStats.minDamage, attackStats.maxDamage) * attackStats.damageMultiplier;
+  private findCombatTargetById(id: string): CombatTarget | undefined {
+    if (id.startsWith('boss_')) {
+      return this.boss ? { kind: 'boss', boss: this.boss } : undefined;
+    }
+    const enemy = this.enemies.find((candidate) => candidate.id === id);
+    return enemy ? { kind: 'enemy', enemy } : undefined;
+  }
+
+  private getTotalPoisonDotDps(): number {
+    const total = this.getEquippedOptionTotal('dotDamagePerSec') * this.getMultiplierProduct('poisonDamageMultiplier');
+    return Math.max(0, total);
+  }
+
+  private getPoisonDotDurationMs(): number {
+    const bonusDuration = this.getEquippedOptionTotal('dotDurationMs');
+    return Phaser.Math.Clamp(bonusDuration > 0 ? bonusDuration : POISON_DOT_FALLBACK_DURATION_MS, 1200, 12000);
+  }
+
+  private applyPoisonStack(target: CombatTarget, dpsPerStack?: number, durationMs?: number): void {
+    const stackDps = Math.max(0.5, dpsPerStack ?? this.getTotalPoisonDotDps());
+    if (stackDps <= 0) {
+      return;
+    }
+
+    const stackDuration = durationMs ?? this.getPoisonDotDurationMs();
+    const id = this.getCombatTargetId(target);
+    const existing = this.poisonDebuffs.get(id);
+    if (existing) {
+      if (existing.stacks < MAX_POISON_STACKS) {
+        existing.stacks += 1;
+        existing.totalDps += stackDps;
+      }
+      existing.durationMs = Math.max(existing.durationMs, stackDuration);
+      return;
+    }
+
+    this.poisonDebuffs.set(id, {
+      stacks: 1,
+      totalDps: stackDps,
+      durationMs: stackDuration,
+      tickMs: 0,
+    });
+  }
+
+  private updatePoisonDebuffs(delta: number): void {
+    for (const [id, debuff] of [...this.poisonDebuffs.entries()]) {
+      debuff.durationMs -= delta;
+      debuff.tickMs -= delta;
+      if (debuff.tickMs <= 0) {
+        const target = this.findCombatTargetById(id);
+        if (target) {
+          const position = this.getTargetPosition(target);
+          this.damageCombatTargetPoison(target, Math.max(1, debuff.totalDps * 0.5));
+          this.addPoisonTickText(position.x, position.y - s(8));
+        }
+        debuff.tickMs = POISON_TICK_MS;
+      }
+      if (debuff.durationMs <= 0) {
+        this.poisonDebuffs.delete(id);
+      }
+    }
+  }
+
+  private damageCombatTargetPoison(target: CombatTarget, damage: number): void {
+    const position = this.getTargetPosition(target);
+    this.showDamageNumber(position.x, position.y, damage, 0x74ff83);
+    if (target.kind === 'boss') {
+      this.damageBoss(damage);
+      return;
+    }
+    this.damageEnemy(target.enemy, damage);
+  }
+
+  private rollMainDamage(attackStats: MainAttackStats, damageScale = 1): number {
+    let damage = Phaser.Math.FloatBetween(attackStats.minDamage, attackStats.maxDamage) * attackStats.damageMultiplier * damageScale;
     const critChance = Phaser.Math.Clamp(this.getEquippedOptionTotal('critChance'), 0, 0.55);
     if (Math.random() < critChance) {
       damage *= this.getMultiplierProduct('critDamageMultiplier');
@@ -1482,6 +1591,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    this.poisonDebuffs.delete(enemy.id);
     const { x, y } = enemy.sprite;
     enemy.sprite.destroy();
     this.enemies = this.enemies.filter((candidate) => candidate.id !== enemy.id);
@@ -1546,6 +1656,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    this.poisonDebuffs.delete(`boss_${this.boss.def.id}`);
     this.boss.sprite.destroy();
     this.boss = undefined;
     this.bossHpBarBg?.destroy();
@@ -1713,6 +1824,7 @@ export class GameScene extends Phaser.Scene {
   private openRewardModal(options: RolledEquipment[], phase: 'normalReward' | 'focusReward' | 'bossReward', titleText = 'Reward Select'): void {
     this.prepareForRewardModal();
     this.rewardPhase = phase;
+    this.closeRewardEquippedOverlay();
     this.clearModal();
     const shouldShowFirstRewardHint = phase !== 'bossReward' && !getSaveData().tutorial.firstRewardSeen;
     if (shouldShowFirstRewardHint) {
@@ -1729,22 +1841,30 @@ export class GameScene extends Phaser.Scene {
     const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72)
       .setOrigin(0)
       .setInteractive();
-    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, s(336), s(572), 0x16111e)
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, s(336), s(612), 0x16111e)
       .setStrokeStyle(s(2), 0xf0c85a);
-    const title = this.add.text(GAME_WIDTH / 2, s(58), titleText, {
+    const title = this.add.text(GAME_WIDTH / 2, s(52), titleText, {
       fontSize: sf(22),
       color: phase === 'focusReward' ? '#ffdb9a' : '#f8ddb0',
     }).setOrigin(0.5);
+    const rarityHint = this.add.text(GAME_WIDTH / 2, s(74), this.getRarityStatHint(), {
+      fontSize: sf(8),
+      color: '#a99d8c',
+      wordWrap: { width: s(292) },
+      align: 'center',
+      lineSpacing: s(1),
+    }).setOrigin(0.5);
     const hint = shouldShowFirstRewardHint
-      ? this.add.text(GAME_WIDTH / 2, s(82), 'Choose 1 gear, skip for a small run bonus, or pick the same gear to enhance it.', {
+      ? this.add.text(GAME_WIDTH / 2, s(92), 'Choose 1 gear, skip for a small run bonus, or pick the same gear to enhance it.', {
         fontSize: sf(9),
         color: '#d7cdbd',
         wordWrap: { width: s(292) },
         align: 'center',
       }).setOrigin(0.5)
       : undefined;
-    container.add(hint ? [backdrop, panel, title, hint] : [backdrop, panel, title]);
+    container.add(hint ? [backdrop, panel, title, rarityHint, hint] : [backdrop, panel, title, rarityHint]);
 
+    const cardStartY = shouldShowFirstRewardHint ? s(156) : s(142);
     const menuItems: KeyboardMenuItem[] = [];
     options.forEach((item, index) => {
       const currentItem = getSaveData().equipped[item.slot];
@@ -1753,45 +1873,47 @@ export class GameScene extends Phaser.Scene {
       const upgradedPreview = isSameItem && currentItem && !isMaxUpgrade
         ? this.upgradeEquipment(currentItem)
         : undefined;
-      const y = s(148) + index * s(132);
-      const card = this.add.rectangle(GAME_WIDTH / 2, y, s(306), s(124), isSameItem ? 0x2e2a19 : 0x241b2d)
+      const y = cardStartY + index * s(128);
+      const card = this.add.rectangle(GAME_WIDTH / 2, y, s(306), s(118), isSameItem ? 0x2e2a19 : 0x241b2d)
         .setStrokeStyle(isSameItem ? s(3) : s(2), isSameItem ? 0x9dff7a : this.getRarityColor(item.rarity))
         .setInteractive({ useHandCursor: true });
       const synergyBadge = this.getCoreSynergyKinds(item)
-        .flatMap((kind, badgeIndex) => this.createSynergyBadge(kind, s(268), y - s(50) + badgeIndex * s(18)));
+        .flatMap((kind, badgeIndex) => this.createSynergyBadge(kind, s(268), y - s(48) + badgeIndex * s(18)));
       const cardNameSource = isSameItem && currentItem ? currentItem : item;
       const cardTitle = isSameItem && currentItem && upgradedPreview
         ? `${this.getEquipmentDisplayName(currentItem)} → +${upgradedPreview.upgradeLevel ?? 0} [${getRarityLabel(currentItem.rarity)}]`
         : `${this.getEquipmentDisplayName(cardNameSource)} [${getRarityLabel(cardNameSource.rarity)}]`;
-      const name = this.add.text(s(30), y - s(55), this.truncateText(cardTitle, 31), {
+      const name = this.add.text(s(30), y - s(52), this.truncateText(cardTitle, 31), {
         fontSize: sf(13),
         color: '#ffffff',
       });
-      this.addTagIcons(container, item, s(30), y - s(34));
-      const replaceText = this.add.text(s(30), y - s(17), this.truncateText(this.getReplacementText(item), 41), {
+      this.addTagIcons(container, item, s(30), y - s(32));
+      const replaceText = this.add.text(s(30), y - s(16), this.truncateText(this.getReplacementText(item), 44), {
         fontSize: sf(10),
         color: this.getReplacementTextColor(item),
       });
-      const desc = this.add.text(s(30), y + s(1), `${this.getSlotLabel(item.slot)} · ${item.playerDescription}`, {
-        fontSize: sf(9),
+      const desc = this.add.text(s(30), y + s(2), `${this.getSlotLabel(item.slot)} · ${item.playerDescription}`, {
+        fontSize: sf(8),
         color: '#d7cdbd',
+        wordWrap: { width: s(284) },
+        maxLines: 1,
+      });
+      const statsText = this.formatRewardCardStats(currentItem, item, Boolean(isSameItem && currentItem && upgradedPreview), upgradedPreview);
+      const optionsText = this.add.text(s(30), y + s(24), statsText, {
+        fontSize: sf(9),
+        color: isSameItem ? '#9dff7a' : '#f0d8aa',
         wordWrap: { width: s(284) },
         maxLines: 2,
         lineSpacing: s(1),
       });
-      const statsText = isSameItem && currentItem && upgradedPreview
-        ? this.formatUpgradeOptionPreview(currentItem, upgradedPreview, 3)
-        : this.formatOptions(isSameItem && currentItem ? currentItem : item, 3);
-      const optionsText = this.add.text(s(30), y + s(35), this.truncateText(statsText, 48), {
-        fontSize: sf(10),
-        color: isSameItem ? '#9dff7a' : '#f0d8aa',
-      });
-      const cardHint = this.add.text(s(30), y + s(52), isMaxUpgrade
+      const cardHint = this.add.text(s(30), y + s(50), isMaxUpgrade
         ? 'Tap: already at max upgrade'
         : isSameItem
           ? 'Tap: upgrade equipped gear (preview stats)'
-          : 'Tap: equip and replace slot', {
-        fontSize: sf(9),
+          : currentItem
+            ? 'Tap: equip · compare stats above (후보 vs 장착)'
+            : 'Tap: equip new gear', {
+        fontSize: sf(8),
         color: '#9a8a78',
       });
       const selectItem = (): void => this.equipReward(item);
@@ -1805,10 +1927,26 @@ export class GameScene extends Phaser.Scene {
       container.add([card, ...synergyBadge, name, replaceText, desc, optionsText, cardHint]);
     });
 
-    const skip = this.add.rectangle(GAME_WIDTH / 2, s(558), s(278), s(34), 0x302631)
+    const equippedView = this.add.rectangle(GAME_WIDTH / 2, s(538), s(278), s(30), 0x24303f)
+      .setStrokeStyle(s(1), 0x82b4ff)
+      .setInteractive({ useHandCursor: true });
+    const equippedViewText = this.add.text(GAME_WIDTH / 2, s(538), '장착 중인 장비 보기 (6슬롯 · 옵션)', {
+      fontSize: sf(10),
+      color: '#cfe4ff',
+    }).setOrigin(0.5);
+    const openEquippedView = (): void => this.showRewardEquippedOverlay();
+    equippedView.on('pointerdown', openEquippedView);
+    menuItems.push({
+      target: equippedView,
+      normalStrokeWidth: s(1),
+      normalStrokeColor: 0x82b4ff,
+      onSelect: openEquippedView,
+    });
+
+    const skip = this.add.rectangle(GAME_WIDTH / 2, s(576), s(278), s(34), 0x302631)
       .setStrokeStyle(s(1), 0x9a8a78)
       .setInteractive({ useHandCursor: true });
-    const skipText = this.add.text(GAME_WIDTH / 2, s(558), this.getSkipRewardLabel(phase), {
+    const skipText = this.add.text(GAME_WIDTH / 2, s(576), this.getSkipRewardLabel(phase), {
       fontSize: sf(10),
       color: '#ffffff',
     }).setOrigin(0.5);
@@ -1820,13 +1958,82 @@ export class GameScene extends Phaser.Scene {
       normalStrokeColor: 0x9a8a78,
       onSelect: skipReward,
     });
-    container.add([skip, skipText]);
-    container.add(this.add.text(GAME_WIDTH / 2, s(592), 'W/S · Enter · Click', {
+    container.add([equippedView, equippedViewText, skip, skipText]);
+    container.add(this.add.text(GAME_WIDTH / 2, s(608), 'W/S · Enter · Click', {
       fontSize: sf(9),
       color: '#7a7468',
     }).setOrigin(0.5));
     this.modal = container;
+    this.activeRewardMenuItems = menuItems;
     this.bindModalMenu(menuItems, 1);
+  }
+
+  private showRewardEquippedOverlay(): void {
+    this.closeRewardEquippedOverlay();
+    const overlay = this.add.container(0, 0).setDepth(101);
+    const backdrop = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.82)
+      .setOrigin(0)
+      .setInteractive();
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, s(320), s(560), 0x12101a)
+      .setStrokeStyle(s(2), 0x82b4ff);
+    const title = this.add.text(GAME_WIDTH / 2, s(48), '현재 장착 장비', {
+      fontSize: sf(20),
+      color: '#cfe4ff',
+    }).setOrigin(0.5);
+    const subtitle = this.add.text(GAME_WIDTH / 2, s(72), this.getRarityStatHint(), {
+      fontSize: sf(8),
+      color: '#a99d8c',
+      wordWrap: { width: s(286) },
+      align: 'center',
+    }).setOrigin(0.5);
+    overlay.add([backdrop, panel, title, subtitle]);
+
+    EQUIPMENT_SLOTS.forEach((slot, index) => {
+      const item = getSaveData().equipped[slot];
+      const y = s(98) + index * s(72);
+      const row = this.add.rectangle(GAME_WIDTH / 2, y, s(292), s(64), 0x1c1724)
+        .setStrokeStyle(s(1), item ? this.getRarityColor(item.rarity) : 0x5a5068);
+      const slotLabel = this.add.text(s(34), y - s(18), `${SLOT_ICONS[slot]} ${SLOT_LABELS[slot]}`, {
+        fontSize: sf(11),
+        color: '#f0d8aa',
+      });
+      const nameLine = item
+        ? `${this.getEquipmentDisplayName(item)} [${getRarityLabel(item.rarity)}]`
+        : '(빈 슬롯)';
+      const nameText = this.add.text(s(34), y - s(2), this.truncateText(nameLine, 34), {
+        fontSize: sf(10),
+        color: '#ffffff',
+      });
+      const optionLine = item ? this.truncateText(this.formatOptions(item, 5), 56) : '—';
+      const optionsText = this.add.text(s(34), y + s(14), optionLine, {
+        fontSize: sf(9),
+        color: '#cfc4b2',
+        wordWrap: { width: s(276) },
+        maxLines: 2,
+      });
+      overlay.add([row, slotLabel, nameText, optionsText]);
+    });
+
+    const close = this.add.rectangle(GAME_WIDTH / 2, s(548), s(140), s(32), 0x26314a)
+      .setStrokeStyle(s(1), 0x82b4ff)
+      .setInteractive({ useHandCursor: true });
+    const closeText = this.add.text(GAME_WIDTH / 2, s(548), '닫기', {
+      fontSize: sf(13),
+      color: '#ffffff',
+    }).setOrigin(0.5);
+    const closeOverlay = (): void => this.closeRewardEquippedOverlay();
+    close.on('pointerdown', closeOverlay);
+    this.bindModalSingleButton(close, s(1), 0x82b4ff, closeOverlay);
+    overlay.add([close, closeText]);
+    this.rewardOverlay = overlay;
+  }
+
+  private closeRewardEquippedOverlay(): void {
+    this.rewardOverlay?.destroy(true);
+    this.rewardOverlay = undefined;
+    if (this.modal && this.activeRewardMenuItems.length > 0) {
+      this.bindModalMenu(this.activeRewardMenuItems, 1);
+    }
   }
 
   private equipReward(item: RolledEquipment): void {
@@ -2210,6 +2417,7 @@ export class GameScene extends Phaser.Scene {
 
   private clearModal(): void {
     this.keyboardMenu.unbind();
+    this.closeRewardEquippedOverlay();
     this.modal?.destroy(true);
     this.modal = undefined;
   }
@@ -2389,7 +2597,7 @@ export class GameScene extends Phaser.Scene {
       maxDamage: necklace.rolledOptions.baseDamageMax ?? 12,
       cooldownMs: Phaser.Math.Clamp(cooldown, 900, 9000),
       radius: Phaser.Math.Clamp(radius, s(28), s(130)),
-      dotDamagePerSec: (necklace.rolledOptions.dotDamagePerSec ?? 2) * this.getSupportDamageMultiplier(necklace.tags),
+      dotDamagePerSec: Math.max(1, this.getEquippedOptionTotal('dotDamagePerSec') * this.getSupportDamageMultiplier(necklace.tags)),
       dotDurationMs: Phaser.Math.Clamp(dotDuration, 600, 9000),
       slowPercent: Phaser.Math.Clamp((necklace.rolledOptions.slowPercent ?? 0) + slowBonus, 0, 0.75),
       shieldAmount: Math.max(0, (necklace.rolledOptions.shieldAmount ?? 0) + shieldBonus),
@@ -2548,7 +2756,26 @@ export class GameScene extends Phaser.Scene {
         ? `Same gear · already +${MAX_EQUIPMENT_UPGRADE}`
         : `Same gear · upgrade ${this.getEquipmentDisplayName(currentItem)} → +${nextLevel}`;
     }
-    return `Replaces ${this.getEquipmentDisplayName(currentItem)}`;
+    return `Replaces ${this.getEquipmentDisplayName(currentItem)} [${getRarityLabel(currentItem.rarity)}]`;
+  }
+
+  private getRarityStatHint(): string {
+    return '등급(Common→Relic)은 데미지·HP 등 수치 옵션에만 배율 적용 · 쿨/확률/배율형은 슬롯·장비마다 다름';
+  }
+
+  private formatRewardCardStats(
+    currentItem: RolledEquipment | undefined,
+    candidate: RolledEquipment,
+    isUpgradePreview: boolean,
+    upgradedPreview?: RolledEquipment,
+  ): string {
+    if (isUpgradePreview && currentItem && upgradedPreview) {
+      return this.formatUpgradeOptionPreview(currentItem, upgradedPreview, 3);
+    }
+    if (currentItem && currentItem.id !== candidate.id) {
+      return `후보: ${this.formatOptions(candidate, 3)}\n장착: ${this.formatOptions(currentItem, 3)}`;
+    }
+    return this.formatOptions(candidate, 3);
   }
 
   private getReplacementTextColor(item: RolledEquipment): string {

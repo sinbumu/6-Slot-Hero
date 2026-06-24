@@ -58,7 +58,7 @@ export const WEAPON_DEFS: EquipmentDef[] = [
     skillKind: 'returningPoisonProjectile',
     playerDescription: '적을 관통하고 되돌아오는 독성 원반을 던집니다.',
     basePower: 12,
-    optionRolls: [option('baseDamageMin', 4, 7), option('baseDamageMax', 10, 15), option('cooldownMs', 650, 880), option('pierceCount', 2, 4), option('dotDamagePerSec', 2, 5)],
+    optionRolls: [option('baseDamageMin', 4, 7), option('baseDamageMax', 10, 15), option('cooldownMs', 650, 880), option('pierceCount', 2, 4), option('dotDamagePerSec', 3, 7)],
   }),
 ];
 
@@ -105,7 +105,7 @@ export const NECKLACE_DEFS: EquipmentDef[] = [
     skillKind: 'poisonPool',
     playerDescription: '일정 주기마다 독 장판을 생성해 안의 적에게 지속 피해를 줍니다.',
     basePower: 15,
-    optionRolls: [option('dotDamagePerSec', 5, 9), option('dotDurationMs', 2800, 4200), option('cooldownMs', 4700, 6500), option('radiusPx', 44, 64), option('slowPercent', 0.05, 0.16)],
+    optionRolls: [option('dotDamagePerSec', 6, 11), option('dotDurationMs', 2800, 4200), option('cooldownMs', 4700, 6500), option('radiusPx', 44, 64), option('slowPercent', 0.05, 0.16)],
   }),
 ];
 
