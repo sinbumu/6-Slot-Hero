@@ -346,7 +346,7 @@ export class GameScene extends Phaser.Scene {
     this.updateBoss(gameplayDelta);
     this.updateBossProjectiles(gameplayDelta);
     this.updateHazards(gameplayDelta);
-    if (!this.rewardMoment?.isActive()) {
+    if (!this.rewardMoment?.isOutroActive()) {
       this.updateChestPickup();
     }
     this.updateHud();
@@ -1559,9 +1559,12 @@ export class GameScene extends Phaser.Scene {
     }
     this.hazards = [];
     playSound('clear', this);
-    this.beginRewardIntro(() => {
-      this.openRewardModal(generateRewardOptions({ stageId: this.stageId, context: 'bossReward' }), 'bossReward', 'Boss Reward');
-    });
+    this.rewardMoment?.playPickupFx();
+    this.openChestRewardModal(
+      generateRewardOptions({ stageId: this.stageId, context: 'bossReward' }),
+      'bossReward',
+      'Boss Reward',
+    );
   }
 
   private dropChest(x: number, y: number): void {
@@ -1600,33 +1603,39 @@ export class GameScene extends Phaser.Scene {
     this.chests = this.chests.filter((candidate) => candidate.id !== chest.id);
     this.chestCountInRun += 1;
     playSound('chest', this);
-    this.beginRewardIntro(() => {
-      if (this.chestCountInRun % 3 === 0) {
-        this.openFocusSlotModal();
-        return;
-      }
-      const isFirstStageFirstChest = this.stageId === 1 && this.chestCountInRun === 1;
-      this.openRewardModal(
-        generateRewardOptions({
-          stageId: this.stageId,
-          context: 'normalChest',
-          focusSlot: isFirstStageFirstChest ? 'weapon' : undefined,
-        }),
-        'normalReward',
-      );
-    });
-  }
-
-  private beginRewardIntro(onComplete: () => void): void {
-    if (!this.rewardMoment) {
-      onComplete();
+    this.rewardMoment?.playPickupFx();
+    if (this.chestCountInRun % 3 === 0) {
+      this.openFocusSlotModal();
       return;
     }
-    this.rewardMoment.beginIntro(onComplete);
+    const isFirstStageFirstChest = this.stageId === 1 && this.chestCountInRun === 1;
+    this.openChestRewardModal(
+      generateRewardOptions({
+        stageId: this.stageId,
+        context: 'normalChest',
+        focusSlot: isFirstStageFirstChest ? 'weapon' : undefined,
+      }),
+      'normalReward',
+    );
+  }
+
+  private openChestRewardModal(
+    options: RolledEquipment[],
+    phase: 'normalReward' | 'focusReward' | 'bossReward',
+    titleText = 'Reward Select',
+  ): void {
+    try {
+      this.openRewardModal(options, phase, titleText);
+    } catch (error) {
+      console.error('Failed to open reward modal', error);
+      this.rewardMoment?.cancel();
+      this.rewardPhase = 'none';
+      this.clearModal();
+    }
   }
 
   private openFocusSlotModal(): void {
-    this.rewardMoment?.cancel();
+    this.rewardMoment?.clearVisuals();
     this.rewardPhase = 'focusSlotSelect';
     this.clearModal();
 
@@ -1701,7 +1710,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private openRewardModal(options: RolledEquipment[], phase: 'normalReward' | 'focusReward' | 'bossReward', titleText = 'Reward Select'): void {
-    this.rewardMoment?.cancel();
+    this.rewardMoment?.clearVisuals();
     this.rewardPhase = phase;
     this.clearModal();
     const shouldShowFirstRewardHint = phase !== 'bossReward' && !getSaveData().tutorial.firstRewardSeen;
@@ -2171,7 +2180,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private isRewardFlowLocked(): boolean {
-    return (this.rewardMoment?.isActive() ?? false) || this.rewardPhase === 'recovering';
+    return this.rewardPhase === 'recovering' || (this.rewardMoment?.isOutroActive() ?? false);
   }
 
   private flashPlayer(): void {

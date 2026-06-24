@@ -1,14 +1,13 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH } from '../constants';
 
-export const REWARD_INTRO_MS = 120;
 export const REWARD_OUTRO_GRACE_MS = 200;
 export const REWARD_OUTRO_EASE_MS = 250;
+const PICKUP_FX_MS = 120;
 
-const INTRO_TIME_SCALE = 0.22;
 const OUTRO_EASE_START_SCALE = 0.18;
 
-type RewardMomentState = 'idle' | 'intro' | 'outroGrace' | 'outroEase';
+type RewardMomentState = 'idle' | 'outroGrace' | 'outroEase';
 
 export class RewardMomentSystem {
   private state: RewardMomentState = 'idle';
@@ -34,7 +33,15 @@ export class RewardMomentSystem {
     this.resetState();
   }
 
-  isActive(): boolean {
+  clearVisuals(): void {
+    this.cancelPending();
+    this.overlay?.setAlpha(0);
+    if (this.state === 'idle' && this.scene.cameras?.main) {
+      this.scene.cameras.main.setZoom(this.baseZoom || 1);
+    }
+  }
+
+  isOutroActive(): boolean {
     return this.state !== 'idle';
   }
 
@@ -50,31 +57,28 @@ export class RewardMomentSystem {
     return this.movementBlocked;
   }
 
-  beginIntro(onComplete: () => void): void {
-    this.cancelPending();
-    this.state = 'intro';
-    this.timeScale = INTRO_TIME_SCALE;
+  /** Visual-only pickup beat. Does not delay or gate the reward modal. */
+  playPickupFx(): void {
+    this.clearVisuals();
     this.invulnerable = true;
-    this.movementBlocked = false;
     this.baseZoom = this.scene.cameras.main.zoom;
 
     const overlay = this.ensureOverlay();
     overlay.setAlpha(0);
     this.pendingTweens.push(this.scene.tweens.add({
       targets: overlay,
-      alpha: 0.34,
-      duration: 90,
+      alpha: 0.3,
+      duration: 80,
       ease: 'Sine.Out',
+      yoyo: true,
+      hold: 20,
     }));
-    this.scene.cameras.main.zoomTo(this.baseZoom * 1.04, REWARD_INTRO_MS, 'Sine.Out');
-    this.scene.cameras.main.shake(REWARD_INTRO_MS, 0.0018);
+    this.scene.cameras.main.zoomTo(this.baseZoom * 1.03, PICKUP_FX_MS, 'Sine.Out');
+    this.scene.cameras.main.shake(PICKUP_FX_MS, 0.0015);
 
-    this.pendingTimers.push(this.scene.time.delayedCall(REWARD_INTRO_MS, () => {
-      if (this.state !== 'intro') {
-        return;
-      }
-      this.finishIntroVisuals();
-      onComplete();
+    this.pendingTimers.push(this.scene.time.delayedCall(PICKUP_FX_MS, () => {
+      this.invulnerable = false;
+      this.clearVisuals();
     }));
   }
 
@@ -122,15 +126,6 @@ export class RewardMomentSystem {
     }));
   }
 
-  private finishIntroVisuals(): void {
-    this.fadeOutOverlay(80);
-    this.scene.cameras.main.zoomTo(this.baseZoom, 80, 'Sine.Out');
-    this.state = 'idle';
-    this.timeScale = 1;
-    this.invulnerable = false;
-    this.movementBlocked = false;
-  }
-
   private resetState(): void {
     this.state = 'idle';
     this.timeScale = 1;
@@ -162,18 +157,6 @@ export class RewardMomentSystem {
         .setScrollFactor(0);
     }
     return this.overlay;
-  }
-
-  private fadeOutOverlay(duration: number): void {
-    if (!this.overlay) {
-      return;
-    }
-    this.pendingTweens.push(this.scene.tweens.add({
-      targets: this.overlay,
-      alpha: 0,
-      duration,
-      ease: 'Sine.Out',
-    }));
   }
 
   private killOverlayTweens(): void {
