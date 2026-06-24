@@ -2338,15 +2338,16 @@ export class GameScene extends Phaser.Scene {
       const upgradedPreview = isSameItem && currentItem && !isMaxUpgrade
         ? this.upgradeEquipment(currentItem)
         : undefined;
-      const card = this.add.rectangle(GAME_WIDTH / 2, y, s(306), s(118), isSameItem ? 0x2e2a19 : 0x241b2d)
-        .setStrokeStyle(isSameItem ? s(3) : s(2), isSameItem ? 0x9dff7a : this.getRarityColor(item.rarity))
-        .setInteractive({ useHandCursor: true });
+      const card = this.add.rectangle(GAME_WIDTH / 2, y, s(306), s(118), isMaxUpgrade ? 0x1f1a14 : isSameItem ? 0x2e2a19 : 0x241b2d)
+        .setStrokeStyle(isSameItem ? s(3) : s(2), isSameItem ? 0x9dff7a : this.getRarityColor(item.rarity));
       const synergyBadge = this.getCoreSynergyKinds(item)
         .flatMap((kind, badgeIndex) => this.createSynergyBadge(kind, s(268), y - s(48) + badgeIndex * s(18)));
       const cardNameSource = isSameItem && currentItem ? currentItem : item;
       const cardTitle = isSameItem && currentItem && upgradedPreview
-        ? `${this.getEquipmentDisplayName(currentItem)} → +${upgradedPreview.upgradeLevel ?? 0} [${getRarityLabel(currentItem.rarity)}]`
-        : `${this.getEquipmentDisplayName(cardNameSource)} [${getRarityLabel(cardNameSource.rarity)}]`;
+        ? this.formatEquipmentUpgradeTitle(currentItem, upgradedPreview.upgradeLevel ?? 0)
+        : isMaxUpgrade && currentItem
+          ? `${this.getEquipmentDisplayName(currentItem)} [MAX] [${getRarityLabel(currentItem.rarity)}]`
+          : `${this.getEquipmentDisplayName(cardNameSource)} [${getRarityLabel(cardNameSource.rarity)}]`;
       const name = this.add.text(s(30), y - s(52), this.truncateText(cardTitle, 31), {
         fontSize: sf(13),
         color: '#ffffff',
@@ -2362,7 +2363,7 @@ export class GameScene extends Phaser.Scene {
         wordWrap: { width: s(284) },
         maxLines: 1,
       });
-      const statsText = this.formatRewardCardStats(currentItem, item, Boolean(isSameItem && currentItem && upgradedPreview), upgradedPreview);
+      const statsText = this.formatRewardCardStats(currentItem, item, Boolean(isSameItem && currentItem && upgradedPreview), upgradedPreview, isMaxUpgrade);
       const optionsText = this.add.text(s(30), y + s(24), statsText, {
         fontSize: sf(9),
         color: isSameItem ? '#9dff7a' : '#f0d8aa',
@@ -2371,7 +2372,7 @@ export class GameScene extends Phaser.Scene {
         lineSpacing: s(1),
       });
       const cardHint = this.add.text(s(30), y + s(50), isMaxUpgrade
-        ? 'Tap: already at max upgrade'
+        ? '최대 강화(+10) · 선택 불필요'
         : isSameItem
           ? 'Tap: upgrade equipped gear (preview stats)'
           : currentItem
@@ -2380,8 +2381,16 @@ export class GameScene extends Phaser.Scene {
         fontSize: sf(8),
         color: '#9a8a78',
       });
-      const selectItem = (): void => this.equipReward(item);
-      card.on('pointerdown', selectItem);
+      const selectItem = (): void => {
+        if (isMaxUpgrade) {
+          return;
+        }
+        this.equipReward(item);
+      };
+      if (!isMaxUpgrade) {
+        card.setInteractive({ useHandCursor: true });
+        card.on('pointerdown', selectItem);
+      }
       menuItems.push({
         target: card,
         normalStrokeWidth: isSameItem ? s(3) : s(2),
@@ -2445,17 +2454,17 @@ export class GameScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     const synergyBadge = this.getCoreSynergyKinds(currentItem)
       .flatMap((kind, badgeIndex) => this.createSynergyBadge(kind, s(268), y - s(48) + badgeIndex * s(18)));
-    const cardTitle = `🔧 ${this.getEquipmentDisplayName(currentItem)} +${currentLevel} → +${upgradedItem.upgradeLevel ?? currentLevel + 1} [${getRarityLabel(currentItem.rarity)}]`;
+    const cardTitle = `🔧 ${this.formatEquipmentUpgradeTitle(currentItem, upgradedItem.upgradeLevel ?? currentLevel + 1)}`;
     const name = this.add.text(s(30), y - s(52), this.truncateText(cardTitle, 31), {
       fontSize: sf(13),
       color: '#ffffff',
     });
     this.addTagIcons(container, currentItem, s(30), y - s(32));
-    const replaceText = this.add.text(s(30), y - s(16), this.truncateText(`${this.getSlotLabel(slot)} · 착용 중 랜덤 강화`, 44), {
+    const replaceText = this.add.text(s(30), y - s(16), this.truncateText(`${this.getSlotLabel(slot)} · 착용 장비 +1 강화`, 44), {
       fontSize: sf(10),
       color: '#c9a0ff',
     });
-    const desc = this.add.text(s(30), y + s(2), '이번 상자에서 착용 슬롯 하나를 무작위로 골라 강화합니다.', {
+    const desc = this.add.text(s(30), y + s(2), `${this.getEquipmentBaseName(currentItem)}의 옵션이 강화됩니다.`, {
       fontSize: sf(8),
       color: '#d7cdbd',
       wordWrap: { width: s(284) },
@@ -2555,6 +2564,9 @@ export class GameScene extends Phaser.Scene {
   private equipReward(item: RolledEquipment): void {
     const shouldClearStage = this.rewardPhase === 'bossReward';
     const currentItem = getSaveData().equipped[item.slot];
+    if (currentItem?.id === item.id && (currentItem.upgradeLevel ?? 0) >= MAX_EQUIPMENT_UPGRADE) {
+      return;
+    }
     const isUpgrade = currentItem?.id === item.id;
     const shouldShowFirstEquipHint = !shouldClearStage && !getSaveData().tutorial.firstEquipSeen;
     updateSaveData((save) => {
@@ -3093,7 +3105,15 @@ export class GameScene extends Phaser.Scene {
       return Math.max(1, Math.round(upgraded));
     }
 
+    if (this.isPercentOptionKey(key)) {
+      return Math.round(upgraded * 10000) / 10000;
+    }
+
     return Math.round(upgraded * 100) / 100;
+  }
+
+  private isPercentOptionKey(key: string): boolean {
+    return key.endsWith('Percent') || key === 'critChance' || key === 'echoChance';
   }
 
   private finishRun(cleared: boolean): void {
@@ -3330,9 +3350,18 @@ export class GameScene extends Phaser.Scene {
     return total;
   }
 
+  private getEquipmentBaseName(item: RolledEquipment): string {
+    return item.nameKo;
+  }
+
   private getEquipmentDisplayName(item: RolledEquipment): string {
     const level = item.upgradeLevel ?? 0;
     return level > 0 ? `${item.nameKo} +${level}` : item.nameKo;
+  }
+
+  private formatEquipmentUpgradeTitle(item: RolledEquipment, nextLevel: number): string {
+    const currentLevel = item.upgradeLevel ?? 0;
+    return `${this.getEquipmentBaseName(item)} +${currentLevel} → +${nextLevel} [${getRarityLabel(item.rarity)}]`;
   }
 
   private addTagIcons(container: Phaser.GameObjects.Container, item: RolledEquipment, x: number, y: number): void {
@@ -3399,7 +3428,7 @@ export class GameScene extends Phaser.Scene {
       const nextLevel = Math.min(MAX_EQUIPMENT_UPGRADE, (currentItem.upgradeLevel ?? 0) + 1);
       return (currentItem.upgradeLevel ?? 0) >= MAX_EQUIPMENT_UPGRADE
         ? `Same gear · already +${MAX_EQUIPMENT_UPGRADE}`
-        : `Same gear · upgrade ${this.getEquipmentDisplayName(currentItem)} → +${nextLevel}`;
+        : `Same gear · upgrade ${this.getEquipmentBaseName(currentItem)} +${currentItem.upgradeLevel ?? 0} → +${nextLevel}`;
     }
     return `Replaces ${this.getEquipmentDisplayName(currentItem)} [${getRarityLabel(currentItem.rarity)}]`;
   }
@@ -3413,12 +3442,19 @@ export class GameScene extends Phaser.Scene {
     candidate: RolledEquipment,
     isUpgradePreview: boolean,
     upgradedPreview?: RolledEquipment,
+    isMaxUpgrade = false,
   ): string {
+    if (isMaxUpgrade && currentItem) {
+      return `MAX +${MAX_EQUIPMENT_UPGRADE} · ${this.formatOptions(currentItem, 3)}`;
+    }
     if (isUpgradePreview && currentItem && upgradedPreview) {
       return this.formatUpgradeOptionPreview(currentItem, upgradedPreview, 3);
     }
     if (currentItem && currentItem.id !== candidate.id) {
       return `후보: ${this.formatOptions(candidate, 3)}\n장착: ${this.formatOptions(currentItem, 3)}`;
+    }
+    if (currentItem && currentItem.id === candidate.id) {
+      return this.formatOptions(currentItem, 3);
     }
     return this.formatOptions(candidate, 3);
   }
@@ -3456,8 +3492,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private formatEquipmentInfo(item: RolledEquipment): string {
+    const levelLine = (item.upgradeLevel ?? 0) > 0 ? `강화 +${item.upgradeLevel} / MAX +${MAX_EQUIPMENT_UPGRADE}` : `강화 +0 / MAX +${MAX_EQUIPMENT_UPGRADE}`;
     return [
       `${SLOT_LABELS[item.slot]} / ${getRarityLabel(item.rarity)}`,
+      levelLine,
       item.playerDescription,
       `Tags: ${this.getDisplayTags(item).map((tag) => TAG_ICON_CONFIG[tag].label).join(' / ')}`,
       this.formatOptions(item, 8),
@@ -3467,8 +3505,21 @@ export class GameScene extends Phaser.Scene {
   private formatOptions(item: RolledEquipment, limit: number): string {
     return Object.entries(item.rolledOptions)
       .slice(0, limit)
-      .map(([key, value]) => `${this.formatOptionKey(key)} ${value}`)
+      .map(([key, value]) => `${this.formatOptionKey(key)} ${this.formatOptionValue(key, value)}`)
       .join(' · ');
+  }
+
+  private formatOptionValue(key: string, value: number): string {
+    if (this.isPercentOptionKey(key)) {
+      return `${(value * 100).toFixed(1)}%`;
+    }
+    if (key === 'cooldownMs' || key.endsWith('DurationMs')) {
+      return `${Math.round(value)}ms`;
+    }
+    if (Math.abs(value - Math.round(value)) < 0.001) {
+      return String(Math.round(value));
+    }
+    return value.toFixed(1);
   }
 
   private formatUpgradeOptionPreview(current: RolledEquipment, upgraded: RolledEquipment, limit: number): string {
@@ -3480,7 +3531,7 @@ export class GameScene extends Phaser.Scene {
         if (typeof before !== 'number' || typeof after !== 'number') {
           return undefined;
         }
-        return `${this.formatOptionKey(key)} ${before}→${after}`;
+        return `${this.formatOptionKey(key)} ${this.formatOptionValue(key, before)}→${this.formatOptionValue(key, after)}`;
       })
       .filter((line): line is string => Boolean(line))
       .join(' · ');
@@ -3502,10 +3553,10 @@ export class GameScene extends Phaser.Scene {
       slowDurationMs: 'SLOW-T',
       shieldAmount: 'SHD',
       shieldDurationMs: 'SHD-T',
-      maxHpBonus: 'HP',
-      hpRegenPerSec: 'REG',
-      damageReductionPercent: 'DR',
-      lifestealPercent: 'LIFE',
+      maxHpBonus: '최대HP',
+      hpRegenPerSec: 'HP회복/s',
+      damageReductionPercent: '피해감소',
+      lifestealPercent: '흡혈',
       mainDamageMultiplier: 'MAIN DMG',
       supportDamageMultiplier: 'SUP DMG',
       fireDamageMultiplier: 'FIR DMG',
