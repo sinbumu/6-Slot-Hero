@@ -1559,7 +1559,6 @@ export class GameScene extends Phaser.Scene {
     }
     this.hazards = [];
     playSound('clear', this);
-    this.rewardMoment?.playPickupFx();
     this.openChestRewardModal(
       generateRewardOptions({ stageId: this.stageId, context: 'bossReward' }),
       'bossReward',
@@ -1603,7 +1602,6 @@ export class GameScene extends Phaser.Scene {
     this.chests = this.chests.filter((candidate) => candidate.id !== chest.id);
     this.chestCountInRun += 1;
     playSound('chest', this);
-    this.rewardMoment?.playPickupFx();
     if (this.chestCountInRun % 3 === 0) {
       this.openFocusSlotModal();
       return;
@@ -1635,7 +1633,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private openFocusSlotModal(): void {
-    this.rewardMoment?.clearVisuals();
+    this.prepareForRewardModal();
     this.rewardPhase = 'focusSlotSelect';
     this.clearModal();
 
@@ -1710,7 +1708,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private openRewardModal(options: RolledEquipment[], phase: 'normalReward' | 'focusReward' | 'bossReward', titleText = 'Reward Select'): void {
-    this.rewardMoment?.clearVisuals();
+    this.prepareForRewardModal();
     this.rewardPhase = phase;
     this.clearModal();
     const shouldShowFirstRewardHint = phase !== 'bossReward' && !getSaveData().tutorial.firstRewardSeen;
@@ -1873,13 +1871,23 @@ export class GameScene extends Phaser.Scene {
       this.completeStage();
       return;
     }
+
+    const shouldPlayOutro = this.rewardPhase === 'normalReward' || this.rewardPhase === 'focusReward';
     this.clearModal();
-    this.rewardPhase = 'recovering';
+
     const finishRecovery = (): void => {
       this.rewardPhase = 'none';
       this.equipmentInfoBlockedUntilMs = performance.now() + 240;
       this.updateHud();
     };
+
+    if (!shouldPlayOutro) {
+      this.rewardMoment?.cancel();
+      finishRecovery();
+      return;
+    }
+
+    this.rewardPhase = 'recovering';
     if (!this.rewardMoment) {
       finishRecovery();
       return;
@@ -1892,6 +1900,13 @@ export class GameScene extends Phaser.Scene {
       this.rewardMoment?.cancel();
       finishRecovery();
     });
+  }
+
+  private prepareForRewardModal(): void {
+    this.rewardMoment?.cancel();
+    this.tweens.killTweensOf(this.cameras.main);
+    this.cameras.main.setZoom(1);
+    this.cameras.main.resetFX();
   }
 
   private completeStage(): void {
