@@ -51,10 +51,10 @@ export function buildUiTextStyle(
 }
 
 export function applyUiTextFactoryPatch(): void {
-  const factory = Phaser.GameObjects.GameObjectFactory.prototype;
-  const originalText = factory.text.bind(factory);
+  const prototype = Phaser.GameObjects.GameObjectFactory.prototype;
+  const originalText = prototype.text;
 
-  factory.text = function patchedText(
+  prototype.text = function patchedText(
     this: Phaser.GameObjects.GameObjectFactory,
     x: number,
     y: number,
@@ -62,7 +62,7 @@ export function applyUiTextFactoryPatch(): void {
     style?: Phaser.Types.GameObjects.Text.TextStyle,
   ): Phaser.GameObjects.Text {
     const textContent = Array.isArray(content) ? content.join('\n') : content;
-    return originalText(x, y, content, buildUiTextStyle(textContent, style));
+    return originalText.call(this, x, y, content, buildUiTextStyle(textContent, style));
   };
 }
 
