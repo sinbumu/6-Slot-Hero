@@ -8,7 +8,7 @@ import { playBgm, playSound, type BgmCue } from '../systems/SoundSystem';
 import { FloatingJoystick } from '../systems/FloatingJoystick';
 import { KeyboardMenuNavigator, type KeyboardMenuItem } from '../systems/KeyboardMenuNavigator';
 import { REWARD_OUTRO_EASE_MS, REWARD_OUTRO_GRACE_MS, RewardMomentSystem } from '../systems/RewardMomentSystem';
-import type { EquipmentSlot, RolledEquipment, RunResult, SkillKind, Tag } from '../types';
+import type { EquipmentSlot, OptionKey, RolledEquipment, RunResult, SkillKind, Tag } from '../types';
 
 interface GameSceneData {
   stageId?: number;
@@ -1746,13 +1746,21 @@ export class GameScene extends Phaser.Scene {
     options.forEach((item, index) => {
       const currentItem = getSaveData().equipped[item.slot];
       const isSameItem = currentItem?.id === item.id;
+      const isMaxUpgrade = isSameItem && (currentItem.upgradeLevel ?? 0) >= MAX_EQUIPMENT_UPGRADE;
+      const upgradedPreview = isSameItem && currentItem && !isMaxUpgrade
+        ? this.upgradeEquipment(currentItem)
+        : undefined;
       const y = s(148) + index * s(132);
       const card = this.add.rectangle(GAME_WIDTH / 2, y, s(306), s(124), isSameItem ? 0x2e2a19 : 0x241b2d)
         .setStrokeStyle(isSameItem ? s(3) : s(2), isSameItem ? 0x9dff7a : this.getRarityColor(item.rarity))
         .setInteractive({ useHandCursor: true });
       const synergyBadge = this.getCoreSynergyKinds(item)
         .flatMap((kind, badgeIndex) => this.createSynergyBadge(kind, s(268), y - s(50) + badgeIndex * s(18)));
-      const name = this.add.text(s(30), y - s(55), this.truncateText(`${this.getEquipmentDisplayName(item)} [${getRarityLabel(item.rarity)}]`, 31), {
+      const cardNameSource = isSameItem && currentItem ? currentItem : item;
+      const cardTitle = isSameItem && currentItem && upgradedPreview
+        ? `${this.getEquipmentDisplayName(currentItem)} → +${upgradedPreview.upgradeLevel ?? 0} [${getRarityLabel(currentItem.rarity)}]`
+        : `${this.getEquipmentDisplayName(cardNameSource)} [${getRarityLabel(cardNameSource.rarity)}]`;
+      const name = this.add.text(s(30), y - s(55), this.truncateText(cardTitle, 31), {
         fontSize: sf(13),
         color: '#ffffff',
       });
@@ -1768,11 +1776,18 @@ export class GameScene extends Phaser.Scene {
         maxLines: 2,
         lineSpacing: s(1),
       });
-      const optionsText = this.add.text(s(30), y + s(35), this.truncateText(this.formatOptions(item, 3), 48), {
+      const statsText = isSameItem && currentItem && upgradedPreview
+        ? this.formatUpgradeOptionPreview(currentItem, upgradedPreview, 3)
+        : this.formatOptions(isSameItem && currentItem ? currentItem : item, 3);
+      const optionsText = this.add.text(s(30), y + s(35), this.truncateText(statsText, 48), {
         fontSize: sf(10),
-        color: '#f0d8aa',
+        color: isSameItem ? '#9dff7a' : '#f0d8aa',
       });
-      const cardHint = this.add.text(s(30), y + s(52), isSameItem ? 'Tap: upgrade existing gear' : 'Tap: equip and replace slot', {
+      const cardHint = this.add.text(s(30), y + s(52), isMaxUpgrade
+        ? 'Tap: already at max upgrade'
+        : isSameItem
+          ? 'Tap: upgrade equipped gear (preview stats)'
+          : 'Tap: equip and replace slot', {
         fontSize: sf(9),
         color: '#9a8a78',
       });
@@ -2274,10 +2289,12 @@ export class GameScene extends Phaser.Scene {
       return item;
     }
 
-    const multiplier = 1 + UPGRADE_POWER_STEP;
     const rolledOptions: RolledEquipment['rolledOptions'] = {};
     for (const [key, value] of Object.entries(item.rolledOptions)) {
-      rolledOptions[key as keyof RolledEquipment['rolledOptions']] = typeof value === 'number' ? Math.round(value * multiplier * 100) / 100 : value;
+      if (typeof value !== 'number') {
+        continue;
+      }
+      rolledOptions[key as OptionKey] = this.applyUpgradeOptionValue(key as OptionKey, value);
     }
 
     return {
@@ -2285,6 +2302,24 @@ export class GameScene extends Phaser.Scene {
       upgradeLevel: nextLevel,
       rolledOptions,
     };
+  }
+
+  private isLowerBetterOption(key: OptionKey): boolean {
+    return key === 'cooldownMs'
+      || key === 'mainCooldownMultiplier'
+      || key === 'supportCooldownMultiplier';
+  }
+
+  private applyUpgradeOptionValue(key: OptionKey, value: number): number {
+    const upgraded = this.isLowerBetterOption(key)
+      ? value * (1 - UPGRADE_POWER_STEP)
+      : value * (1 + UPGRADE_POWER_STEP);
+
+    if (key === 'chainCount' || key === 'pierceCount') {
+      return Math.max(1, Math.round(upgraded));
+    }
+
+    return Math.round(upgraded * 100) / 100;
   }
 
   private finishRun(cleared: boolean): void {
@@ -2562,11 +2597,26 @@ export class GameScene extends Phaser.Scene {
       .join(' · ');
   }
 
+  private formatUpgradeOptionPreview(current: RolledEquipment, upgraded: RolledEquipment, limit: number): string {
+    const keys = Object.keys(upgraded.rolledOptions).slice(0, limit) as OptionKey[];
+    return keys
+      .map((key) => {
+        const before = current.rolledOptions[key];
+        const after = upgraded.rolledOptions[key];
+        if (typeof before !== 'number' || typeof after !== 'number') {
+          return undefined;
+        }
+        return `${this.formatOptionKey(key)} ${before}→${after}`;
+      })
+      .filter((line): line is string => Boolean(line))
+      .join(' · ');
+  }
+
   private formatOptionKey(key: string): string {
     const labels: Record<string, string> = {
-      baseDamageMin: 'DMG-',
-      baseDamageMax: 'DMG+',
-      cooldownMs: 'CD',
+      baseDamageMin: '최소',
+      baseDamageMax: '최대',
+      cooldownMs: '쿨',
       rangePx: 'RNG',
       radiusPx: 'AOE',
       projectileSpeed: 'SPD',
