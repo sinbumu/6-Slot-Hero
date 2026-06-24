@@ -97,6 +97,17 @@ export interface RolledEquipment extends EquipmentDef {
   rolledOptions: Partial<Record<OptionKey, number>>;
 }
 
+export interface RandomUpgradeReward {
+  kind: 'randomUpgrade';
+  slot: EquipmentSlot;
+  currentItem: RolledEquipment;
+  upgradedItem: RolledEquipment;
+}
+
+export type RewardOption =
+  | { kind: 'equipment'; item: RolledEquipment }
+  | RandomUpgradeReward;
+
 export interface SaveData {
   version: number;
   unlockedStage: number;

@@ -18,7 +18,7 @@ import { playBgm, playSound, type BgmCue } from '../systems/SoundSystem';
 import { FloatingJoystick } from '../systems/FloatingJoystick';
 import { KeyboardMenuNavigator, type KeyboardMenuItem } from '../systems/KeyboardMenuNavigator';
 import { REWARD_OUTRO_EASE_MS, REWARD_OUTRO_GRACE_MS, RewardMomentSystem } from '../systems/RewardMomentSystem';
-import type { EquipmentSlot, OptionKey, RolledEquipment, RunResult, SkillKind, Tag } from '../types';
+import type { EquipmentSlot, OptionKey, RandomUpgradeReward, RewardOption, RolledEquipment, RunResult, SkillKind, Tag } from '../types';
 
 interface GameSceneData {
   stageId?: number;
@@ -151,6 +151,7 @@ const BARE_FIST_RANGE = s(68);
 const MAX_ENEMIES = 80;
 const CHEST_DROP_CHANCE = 0.072;
 const CHEST_PITY_KILLS = 10;
+const RANDOM_UPGRADE_OPTION_CHANCE = 0.05;
 const SKIP_BONUS_MAX_HP = 2;
 const SKIP_BONUS_HEAL = 12;
 const SKIP_BONUS_BOSS_GAUGE = 3;
@@ -2086,7 +2087,7 @@ export class GameScene extends Phaser.Scene {
     this.hazards = [];
     playSound('clear', this);
     this.openChestRewardModal(
-      generateRewardOptions({ stageId: this.stageId, context: 'bossReward' }),
+      this.buildRewardOptions({ stageId: this.stageId, context: 'bossReward' }),
       'bossReward',
       'Boss Reward',
     );
@@ -2134,17 +2135,61 @@ export class GameScene extends Phaser.Scene {
     }
     const isFirstStageFirstChest = this.stageId === 1 && this.chestCountInRun === 1;
     this.openChestRewardModal(
-      generateRewardOptions({
+      this.buildRewardOptions({
         stageId: this.stageId,
         context: 'normalChest',
         focusSlot: isFirstStageFirstChest ? 'weapon' : undefined,
+        allowRandomUpgrade: !isFirstStageFirstChest,
       }),
       'normalReward',
     );
   }
 
+  private buildRewardOptions(params: {
+    stageId: number;
+    context: 'normalChest' | 'focusedChest' | 'bossReward';
+    focusSlot?: EquipmentSlot;
+    allowRandomUpgrade?: boolean;
+  }): RewardOption[] {
+    const options: RewardOption[] = generateRewardOptions(params).map((item) => ({ kind: 'equipment' as const, item }));
+    const allowRandomUpgrade = params.allowRandomUpgrade ?? true;
+    if (!allowRandomUpgrade || Math.random() >= RANDOM_UPGRADE_OPTION_CHANCE) {
+      return options;
+    }
+
+    const upgradeTarget = this.pickRandomUpgradeableEquipped();
+    if (!upgradeTarget) {
+      return options;
+    }
+
+    const [slot, currentItem] = upgradeTarget;
+    const replaceIndex = Phaser.Math.Between(0, options.length - 1);
+    options[replaceIndex] = {
+      kind: 'randomUpgrade',
+      slot,
+      currentItem,
+      upgradedItem: this.upgradeEquipment(currentItem),
+    };
+    return Phaser.Utils.Array.Shuffle(options);
+  }
+
+  private pickRandomUpgradeableEquipped(): [EquipmentSlot, RolledEquipment] | undefined {
+    const eligible: Array<[EquipmentSlot, RolledEquipment]> = [];
+    for (const slot of EQUIPMENT_SLOTS) {
+      const item = getSaveData().equipped[slot];
+      if (!item || (item.upgradeLevel ?? 0) >= MAX_EQUIPMENT_UPGRADE) {
+        continue;
+      }
+      eligible.push([slot, item]);
+    }
+    if (eligible.length === 0) {
+      return undefined;
+    }
+    return Phaser.Utils.Array.GetRandom(eligible);
+  }
+
   private openChestRewardModal(
-    options: RolledEquipment[],
+    options: RewardOption[],
     phase: 'normalReward' | 'focusReward' | 'bossReward',
     titleText = 'Reward Select',
   ): void {
@@ -2194,7 +2239,7 @@ export class GameScene extends Phaser.Scene {
       }).setOrigin(0.5);
       const selectSlot = (): void => {
         this.openRewardModal(
-          generateRewardOptions({ stageId: this.stageId, context: 'focusedChest', focusSlot: slot }),
+          this.buildRewardOptions({ stageId: this.stageId, context: 'focusedChest', focusSlot: slot }),
           'focusReward',
           `${this.getSlotLabel(slot)} Focus`,
         );
@@ -2233,7 +2278,7 @@ export class GameScene extends Phaser.Scene {
     this.bindModalMenu(menuItems, 2);
   }
 
-  private openRewardModal(options: RolledEquipment[], phase: 'normalReward' | 'focusReward' | 'bossReward', titleText = 'Reward Select'): void {
+  private openRewardModal(options: RewardOption[], phase: 'normalReward' | 'focusReward' | 'bossReward', titleText = 'Reward Select'): void {
     this.prepareForRewardModal();
     this.rewardPhase = phase;
     this.closeRewardEquippedOverlay();
@@ -2278,14 +2323,21 @@ export class GameScene extends Phaser.Scene {
 
     const cardStartY = shouldShowFirstRewardHint ? s(156) : s(142);
     const menuItems: KeyboardMenuItem[] = [];
-    options.forEach((item, index) => {
+    options.forEach((option, index) => {
+      const y = cardStartY + index * s(128);
+
+      if (option.kind === 'randomUpgrade') {
+        this.addRandomUpgradeRewardCard(container, menuItems, option, y);
+        return;
+      }
+
+      const item = option.item;
       const currentItem = getSaveData().equipped[item.slot];
       const isSameItem = currentItem?.id === item.id;
       const isMaxUpgrade = isSameItem && (currentItem.upgradeLevel ?? 0) >= MAX_EQUIPMENT_UPGRADE;
       const upgradedPreview = isSameItem && currentItem && !isMaxUpgrade
         ? this.upgradeEquipment(currentItem)
         : undefined;
-      const y = cardStartY + index * s(128);
       const card = this.add.rectangle(GAME_WIDTH / 2, y, s(306), s(118), isSameItem ? 0x2e2a19 : 0x241b2d)
         .setStrokeStyle(isSameItem ? s(3) : s(2), isSameItem ? 0x9dff7a : this.getRarityColor(item.rarity))
         .setInteractive({ useHandCursor: true });
@@ -2378,6 +2430,58 @@ export class GameScene extends Phaser.Scene {
     this.modal = container;
     this.activeRewardMenuItems = menuItems;
     this.bindModalMenu(menuItems, 1);
+  }
+
+  private addRandomUpgradeRewardCard(
+    container: Phaser.GameObjects.Container,
+    menuItems: KeyboardMenuItem[],
+    reward: RandomUpgradeReward,
+    y: number,
+  ): void {
+    const { slot, currentItem, upgradedItem } = reward;
+    const currentLevel = currentItem.upgradeLevel ?? 0;
+    const card = this.add.rectangle(GAME_WIDTH / 2, y, s(306), s(118), 0x2a1f35)
+      .setStrokeStyle(s(3), 0xc9a0ff)
+      .setInteractive({ useHandCursor: true });
+    const synergyBadge = this.getCoreSynergyKinds(currentItem)
+      .flatMap((kind, badgeIndex) => this.createSynergyBadge(kind, s(268), y - s(48) + badgeIndex * s(18)));
+    const cardTitle = `🔧 ${this.getEquipmentDisplayName(currentItem)} +${currentLevel} → +${upgradedItem.upgradeLevel ?? currentLevel + 1} [${getRarityLabel(currentItem.rarity)}]`;
+    const name = this.add.text(s(30), y - s(52), this.truncateText(cardTitle, 31), {
+      fontSize: sf(13),
+      color: '#ffffff',
+    });
+    this.addTagIcons(container, currentItem, s(30), y - s(32));
+    const replaceText = this.add.text(s(30), y - s(16), this.truncateText(`${this.getSlotLabel(slot)} · 착용 중 랜덤 강화`, 44), {
+      fontSize: sf(10),
+      color: '#c9a0ff',
+    });
+    const desc = this.add.text(s(30), y + s(2), '이번 상자에서 착용 슬롯 하나를 무작위로 골라 강화합니다.', {
+      fontSize: sf(8),
+      color: '#d7cdbd',
+      wordWrap: { width: s(284) },
+      maxLines: 1,
+    });
+    const statsText = this.formatUpgradeOptionPreview(currentItem, upgradedItem, 3);
+    const optionsText = this.add.text(s(30), y + s(24), statsText, {
+      fontSize: sf(9),
+      color: '#9dff7a',
+      wordWrap: { width: s(284) },
+      maxLines: 2,
+      lineSpacing: s(1),
+    });
+    const cardHint = this.add.text(s(30), y + s(50), 'Tap: upgrade this equipped gear', {
+      fontSize: sf(8),
+      color: '#9a8a78',
+    });
+    const selectReward = (): void => this.applyRandomUpgradeReward(reward);
+    card.on('pointerdown', selectReward);
+    menuItems.push({
+      target: card,
+      normalStrokeWidth: s(3),
+      normalStrokeColor: 0xc9a0ff,
+      onSelect: selectReward,
+    });
+    container.add([card, ...synergyBadge, name, replaceText, desc, optionsText, cardHint]);
   }
 
   private showRewardEquippedOverlay(): void {
@@ -2486,6 +2590,43 @@ export class GameScene extends Phaser.Scene {
         },
       }));
       this.showFirstEquipModal(item, isUpgrade);
+      return;
+    }
+    this.closeRewardModal();
+  }
+
+  private applyRandomUpgradeReward(reward: RandomUpgradeReward): void {
+    const shouldClearStage = this.rewardPhase === 'bossReward';
+    const currentItem = getSaveData().equipped[reward.slot];
+    if (!currentItem || (currentItem.upgradeLevel ?? 0) >= MAX_EQUIPMENT_UPGRADE) {
+      this.closeRewardModal();
+      return;
+    }
+
+    updateSaveData((save) => {
+      const item = save.equipped[reward.slot];
+      if (!item || (item.upgradeLevel ?? 0) >= MAX_EQUIPMENT_UPGRADE) {
+        return save;
+      }
+      return {
+        ...save,
+        equipped: {
+          ...save.equipped,
+          [reward.slot]: this.upgradeEquipment(item),
+        },
+      };
+    });
+    this.equippedCount = Object.keys(getSaveData().equipped).length;
+    const previousMaxHp = this.playerMaxHp;
+    this.playerMaxHp = this.calculatePlayerMaxHp();
+    const maxHpGain = this.playerMaxHp - previousMaxHp;
+    if (maxHpGain > 0) {
+      this.playerHp = Math.min(this.playerMaxHp, this.playerHp + maxHpGain);
+    }
+    playSound('equip', this);
+    this.refreshEquipmentPanel();
+    if (shouldClearStage) {
+      this.completeStage();
       return;
     }
     this.closeRewardModal();
